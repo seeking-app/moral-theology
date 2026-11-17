@@ -1,0 +1,27 @@
+{
+"version": "3ef115e89f47",
+"files": [
+"./",
+"app.css",
+"app.js",
+"data/hans/course.json",
+"data/hans/glossary.json",
+"data/hans/lessons/T1-01.json",
+"data/hans/lessons/T1-06.json",
+"data/hans/lessons/T1-12.json",
+"data/hans/ui.json",
+"data/hant/course.json",
+"data/hant/glossary.json",
+"data/hant/lessons/T1-01.json",
+"data/hant/lessons/T1-06.json",
+"data/hant/lessons/T1-12.json",
+"data/hant/ui.json",
+"data/index.json",
+"icons/apple-touch-icon.png",
+"icons/icon-192.png",
+"icons/icon-512.png",
+"icons/icon-maskable-512.png",
+"index.html",
+"manifest.webmanifest"
+]
+}
