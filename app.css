@@ -155,3 +155,29 @@ h1, h2, h3, p { margin: 0; }
 .hidden { display: none !important; }
 .toast { position: fixed; left: 50%; bottom: calc(var(--tabs-h) + 16px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--ink); color: #fff; padding: 10px 16px; border-radius: 20px; font-size: 14px; z-index: 20; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* multi-course: catalogue, course header, seals, self-check */
+.seal.sm { width: 28px; height: 28px; font-size: 16px; border-radius: 5px; flex-shrink: 0; }
+.seal.lg { width: 52px; height: 52px; font-size: 28px; border-radius: 8px; flex-shrink: 0; }
+.course-card > .seal { width: 44px; height: 44px; font-size: 24px; border-radius: 7px; flex-shrink: 0; }
+.seal.muted { background: var(--sand); color: var(--muted); border: 1px solid var(--line); }
+.course-card { display: flex; gap: 14px; align-items: flex-start; text-decoration: none; color: var(--ink); padding: 16px; }
+.course-card > .muted:last-child { align-self: center; }
+.course-name { font-family: var(--serif); font-weight: 700; font-size: 18px; }
+.course-card .desc { font-family: var(--serif); font-size: 14px; line-height: 1.65; color: var(--ink-2); }
+.course-head { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--ink); }
+.course-head .course-name { font-size: 15px; flex: 1; }
+.meter { height: 4px; border-radius: 2px; background: var(--line); margin-top: 4px; overflow: hidden; }
+.meter > div { height: 4px; background: var(--accent); }
+.notify { align-self: flex-start; margin-top: 6px; min-height: 36px; padding: 0 14px; border-radius: 18px; border: 1px solid var(--line); background: var(--paper-2); color: var(--ink-2); font-size: 13px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.notify.on { border-color: var(--ok); color: var(--ok); background: var(--ok-soft); }
+.reflect { border: 1px dashed #CFC5B6; border-radius: 12px; padding: 16px 18px; }
+.reflect ol { gap: 8px; }
+.reflect li { line-height: 1.8; }
+.unit-row { gap: 12px; }
+.unit-row .small { white-space: nowrap; flex-shrink: 0; }
+.mini-list { padding: 4px 16px; }
+.mini-course { display: flex; align-items: center; gap: 12px; min-height: 60px; padding: 8px 0; border-bottom: 1px solid var(--line-2); text-decoration: none; color: var(--ink); }
+.mini-course:last-child { border-bottom: 0; }
+.mini-course .mc-title { font-family: var(--serif); font-weight: 600; font-size: 16px; }
+.mini-course.planned .mc-title { color: var(--ink-2); }

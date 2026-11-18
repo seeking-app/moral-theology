@@ -1,10 +1,10 @@
-/* 尋道 — fundamental moral theology, bit by bit. Plain JS, no build step. */
+/* 尋道 — a series of bite-size theology courses. Plain JS, no build step. */
 (function () {
   'use strict';
 
   // ---------- storage ----------
   var KEY = 'xundao.v1';
-  var DEFAULTS = { script: 'hant', fs: 17, done: {}, cards: {} };
+  var DEFAULTS = { script: 'hant', fs: 17, done: {}, cards: {}, enrolled: null, notify: {} };
   function load() {
     try {
       var s = JSON.parse(localStorage.getItem(KEY) || 'null');
@@ -15,24 +15,50 @@
   function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* private mode: keep in memory */ } }
 
   // ---------- data ----------
-  var D = { ui: null, course: null, glossary: null, gById: {}, lessons: {} };
+  // D.catalogue: every course (published + planned), display order
+  // D.courses[id]: outline of a published course; D.lessonCourse[lessonId] = courseId
+  var D = { ui: null, catalogue: [], courses: {}, lessonCourse: {}, glossary: null, gById: {}, lessons: {} };
   function getJSON(url) {
     return fetch(url).then(function (r) { if (!r.ok) throw new Error(url + ' ' + r.status); return r.json(); });
   }
   function loadScript(script) {
     var base = 'data/' + script + '/';
-    D.lessons = {};
-    return Promise.all([getJSON(base + 'ui.json'), getJSON(base + 'course.json'), getJSON(base + 'glossary.json')])
+    D.lessons = {}; D.courses = {}; D.lessonCourse = {};
+    return Promise.all([getJSON(base + 'ui.json'), getJSON(base + 'catalogue.json'), getJSON(base + 'glossary.json')])
       .then(function (r) {
-        D.ui = r[0]; D.course = r[1]; D.glossary = r[2]; D.gById = {};
+        D.ui = r[0]; D.catalogue = r[1]; D.glossary = r[2]; D.gById = {};
         D.glossary.forEach(function (g) { D.gById[g.id] = g; });
         document.documentElement.lang = script === 'hans' ? 'zh-Hans' : 'zh-Hant';
         document.title = D.ui.appName;
+        var pub = D.catalogue.filter(function (c) { return c.status === 'published'; });
+        return Promise.all(pub.map(function (c) { return getJSON(base + 'courses/' + c.id + '/course.json'); }));
+      })
+      .then(function (list) {
+        list.forEach(function (course) {
+          D.courses[course.id] = course;
+          course.units.forEach(function (u) { u.lessons.forEach(function (l) { D.lessonCourse[l.id] = course.id; }); });
+        });
+        initEnrolled();
       });
+  }
+  function initEnrolled() {
+    if (Array.isArray(S.enrolled)) {
+      S.enrolled = S.enrolled.filter(function (id) { return D.courses[id]; });
+      return;
+    }
+    // first run (or data from the single-course version): enrol courses already started, else the first course
+    var started = Object.keys(D.courses).filter(function (cid) {
+      return Object.keys(S.done).some(function (lid) { return D.lessonCourse[lid] === cid; });
+    });
+    var first = D.catalogue.filter(function (c) { return c.status === 'published'; })[0];
+    S.enrolled = started.length ? started : (first ? [first.id] : []);
+    save();
   }
   function getLesson(id) {
     if (D.lessons[id]) return Promise.resolve(D.lessons[id]);
-    return getJSON('data/' + S.script + '/lessons/' + id + '.json').then(function (L) { D.lessons[id] = L; return L; });
+    var cid = D.lessonCourse[id];
+    if (!cid) return Promise.reject(new Error('unknown lesson ' + id));
+    return getJSON('data/' + S.script + '/courses/' + cid + '/lessons/' + id + '.json').then(function (L) { D.lessons[id] = L; return L; });
   }
 
   // ---------- helpers ----------
@@ -42,22 +68,35 @@
     if (vars) Object.keys(vars).forEach(function (k) { s = s.split('{' + k + '}').join(vars[k]); });
     return s;
   }
-  function today() { var d = new Date(); return ymd(d); }
+  function today() { return ymd(new Date()); }
   function ymd(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
   function addDays(n) { var d = new Date(); d.setDate(d.getDate() + n); return ymd(d); }
-  function allLessons() {
-    var out = [];
-    D.course.units.forEach(function (u) { u.lessons.forEach(function (l) { out.push(Object.assign({ unit: u }, l)); }); });
+  function meta(cid) { return D.catalogue.filter(function (c) { return c.id === cid; })[0]; }
+  function allLessons(cid) {
+    var out = [], ids = cid ? [cid] : Object.keys(D.courses);
+    ids.forEach(function (id) {
+      D.courses[id].units.forEach(function (u) { u.lessons.forEach(function (l) { out.push(Object.assign({ unit: u, course: id }, l)); }); });
+    });
     return out;
   }
-  function nextLesson() {
-    var avail = allLessons().filter(function (l) { return l.available; });
+  function available(cid) { return allLessons(cid).filter(function (l) { return l.available; }); }
+  function doneCount(cid) { return available(cid).filter(function (l) { return S.done[l.id]; }).length; }
+  function nextLesson(cid) {
+    var avail = available(cid);
     for (var i = 0; i < avail.length; i++) if (!S.done[avail[i].id]) return avail[i];
     return null;
   }
-  function unitOf(id) { var u = null; D.course.units.forEach(function (x) { x.lessons.forEach(function (l) { if (l.id === id) u = x; }); }); return u; }
+  function unitOf(id) {
+    var cid = D.lessonCourse[id], u = null;
+    if (!cid) return null;
+    D.courses[cid].units.forEach(function (x) { x.lessons.forEach(function (l) { if (l.id === id) u = x; }); });
+    return u;
+  }
+  function isEnrolled(cid) { return S.enrolled.indexOf(cid) >= 0; }
+  function enrol(cid) { if (!isEnrolled(cid)) { S.enrolled.push(cid); save(); } }
   function dueCards() { var d = today(); return Object.keys(S.cards).filter(function (id) { return D.gById[id] && S.cards[id].due <= d; }); }
   function unitName(u) { return u.num === '導論' || u.num === '导论' ? u.num + '　' + u.title : (S.script === 'hans' ? '第' + u.num + '单元　' : '第' + u.num + '單元　') + u.title; }
+  function seal(c, cls) { return '<span class="seal ' + (cls || '') + '" aria-hidden="true">' + esc(c.seal || '道') + '</span>'; }
 
   var ICON = {
     today: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
@@ -67,7 +106,8 @@
     gear: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
     back: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>',
     x: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>',
-    chev: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>'
+    chev: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>',
+    bell: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>'
   };
 
   // ---------- shell ----------
@@ -91,64 +131,120 @@
   }
   function applyFont() { document.documentElement.style.setProperty('--fs', S.fs + 'px'); }
 
-  // ---------- screens ----------
+  // ---------- today ----------
   function screenToday() {
     var d = new Date();
-    var L = nextLesson();
     var due = dueCards().length;
     var html = '<div class="stack gap-20">' +
       '<header class="top"><div class="brand"><div class="seal" aria-hidden="true">道</div><span class="brand-name">' + esc(t('appName')) + '</span></div>' +
       '<a class="icon-btn" href="#/settings" aria-label="' + esc(t('settings')) + '">' + ICON.gear + '</a></header>' +
       '<div class="stack gap-4"><span class="small muted">' + esc(t('dateFmt', { m: d.getMonth() + 1, d: d.getDate(), w: D.ui.weekdays[d.getDay()] })) + '</span>' +
       '<h1 class="serif" style="font-weight:600;font-size:26px">' + esc(t('greeting')) + '</h1></div>';
-    if (L) {
-      html += '<section class="card stack gap-12" aria-labelledby="todayTitle">' +
-        '<span class="eyebrow">' + esc(t('todayLesson')) + '</span>' +
-        '<span class="small muted">' + esc(unitName(L.unit)) + ' · ' + esc(t('lessonN', { n: L.n })) + '</span>' +
-        '<h2 id="todayTitle" class="lesson-title">' + esc(L.title) + '</h2>' +
-        '<p class="lede" id="todayKey"></p>' +
-        '<div class="row gap-12 small muted"><span>' + esc(t('minutes', { m: L.minutes })) + '</span><span aria-hidden="true">·</span><span>' + esc(t('quizN', { n: 3 })) + '</span></div>' +
-        '<a class="btn" href="#/lesson/' + L.id + '">' + esc(t('startReading')) + '</a></section>';
-      var u = L.unit, doneN = u.lessons.filter(function (l) { return S.done[l.id]; }).length;
-      html += '<section class="stack gap-8"><div class="row between"><span style="font-size:15px;font-weight:500">' + esc(t('unitProgress', { unit: unitName(u) })) + '</span>' +
-        '<span class="small muted">' + doneN + ' / ' + u.lessons.length + '</span></div>' +
-        '<div class="dots" style="grid-template-columns:repeat(' + u.lessons.length + ',minmax(0,1fr))" role="img" aria-label="' + doneN + ' / ' + u.lessons.length + '">' +
-        u.lessons.map(function (l) { return '<span class="' + (S.done[l.id] ? 'on' : (l.id === L.id ? 'cur' : '')) + '"></span>'; }).join('') + '</div></section>';
-    } else {
-      html += '<section class="card stack gap-8"><h2 class="serif" style="font-size:20px">' + esc(t('allDone')) + '</h2><p class="lede">' + esc(t('allDoneSub')) + '</p></section>';
+    var active = D.catalogue.filter(function (c) { return D.courses[c.id] && isEnrolled(c.id); });
+    if (!active.length) {
+      html += '<section class="card stack gap-12"><h2 class="serif" style="font-size:20px">' + esc(t('noActive')) + '</h2><p class="lede">' + esc(t('noActiveSub')) + '</p>' +
+        '<a class="btn" href="#/course">' + esc(t('browse')) + '</a></section>';
     }
+    active.forEach(function (c) {
+      var L = nextLesson(c.id);
+      var head = '<a class="course-head" href="#/course/' + c.id + '">' + seal(c, 'sm') + '<span class="course-name">' + esc(c.title) + '</span><span class="muted">' + ICON.chev + '</span></a>';
+      if (L) {
+        var u = L.unit, doneN = u.lessons.filter(function (l) { return S.done[l.id]; }).length;
+        html += '<section class="card stack gap-12" aria-label="' + esc(c.title) + '">' + head +
+          '<span class="small muted">' + esc(unitName(u)) + ' · ' + esc(t('lessonN', { n: L.n })) + '</span>' +
+          '<h2 class="lesson-title">' + esc(L.title) + '</h2>' +
+          '<p class="lede" data-key="' + L.id + '"></p>' +
+          '<div class="row gap-12 small muted"><span>' + esc(t('minutes', { m: L.minutes })) + '</span><span aria-hidden="true">·</span><span>' + esc(t('quizN', { n: 3 })) + '</span></div>' +
+          '<a class="btn" href="#/lesson/' + L.id + '">' + esc(t('startReading')) + '</a>' +
+          '<div class="stack gap-8" style="margin-top:4px"><div class="row between"><span class="small" style="font-weight:500">' + esc(unitName(u)) + '</span><span class="small muted">' + doneN + ' / ' + u.lessons.length + '</span></div>' +
+          '<div class="dots" style="grid-template-columns:repeat(' + u.lessons.length + ',minmax(0,1fr))" role="img" aria-label="' + doneN + ' / ' + u.lessons.length + '">' +
+          u.lessons.map(function (l) { return '<span class="' + (S.done[l.id] ? 'on' : (l.id === L.id ? 'cur' : '')) + '"></span>'; }).join('') + '</div></div></section>';
+      } else {
+        html += '<section class="card stack gap-8">' + head + '<h2 class="serif" style="font-size:18px">' + esc(t('courseDone')) + '</h2><p class="lede">' + esc(t('courseDoneSub')) + '</p></section>';
+      }
+    });
+    html += courseStrip();
     html += '<a class="card card-link" href="#/review"><div class="stack gap-4"><span style="font-size:15px;font-weight:500">' + esc(t('reviewCards')) + '</span>' +
-      '<span class="small muted">' + esc(due ? t('cardsDue', { n: due }) : t('noCardsDue')) + '</span></div><span class="muted">' + ICON.chev + '</span></a>' +
-      '<section class="stack gap-8" id="dailyLine"></section></div>';
+      '<span class="small muted">' + esc(due ? t('cardsDue', { n: due }) : t('noCardsDue')) + '</span></div><span class="muted">' + ICON.chev + '</span></a></div>';
     setView(html, 'today');
-    if (L) getLesson(L.id).then(function (x) { var el = document.getElementById('todayKey'); if (el) el.textContent = x.keypoint; }).catch(function () {});
-    dailyLine();
+    view.querySelectorAll('[data-key]').forEach(function (el) {
+      getLesson(el.dataset.key).then(function (x) { el.textContent = x.keypoint; }).catch(function () {});
+    });
   }
-  function dailyLine() {
-    var ids = allLessons().filter(function (l) { return l.available; }).map(function (l) { return l.id; });
-    if (!ids.length) return;
-    var day = Math.floor(Date.now() / 86400000);
-    var id = ids[day % ids.length];
-    getLesson(id).then(function (L) {
-      // only Catechism paragraphs (條/条) make good stand-alone daily lines
-      var items = L.teaching.filter(function (x) { return /[條条]/.test(x.src) && x.text.length > 24; });
-      if (!items.length) return;
-      var it = items[day % items.length];
-      var el = document.getElementById('dailyLine'); if (!el) return;
-      el.innerHTML = '<span class="small muted">' + esc(t('dailyLine')) + '</span><p class="quote">' + esc(it.text) + '</p><span class="small muted">' + esc(it.src) + '</span>';
-    }).catch(function () {});
+  // every course, so a new user sees at once what is offered
+  function courseStrip() {
+    var rows = D.catalogue.map(function (c) {
+      var pub = c.status === 'published';
+      var status = !pub ? t('plannedCourses') : isEnrolled(c.id) ? t('enrolled') + ' · ' + t('progressOf', { d: doneCount(c.id), a: c.available || 0 }) : t('lessonsReady', { a: c.available || 0, t: c.est });
+      return '<a class="mini-course' + (pub ? '' : ' planned') + '" href="#/course' + (pub ? '/' + c.id : '') + '">' + seal(c, pub ? 'sm' : 'sm muted') +
+        '<span class="stack" style="flex:1;min-width:0"><span class="mc-title">' + esc(c.title) + '</span><span class="small muted">' + esc(status) + '</span></span>' +
+        '<span class="muted">' + ICON.chev + '</span></a>';
+    }).join('');
+    return '<section class="stack gap-8"><div class="row between"><span style="font-size:15px;font-weight:500">' + esc(t('allCourses')) + '</span>' +
+      '<a class="small" href="#/course" style="text-decoration:none">' + esc(t('seeAll')) + '</a></div><div class="card mini-list">' + rows + '</div></section>';
+  }
+  // ---------- catalogue ----------
+  function courseCard(c) {
+    var body = '<div class="stack gap-4" style="flex:1;min-width:0"><span class="course-name">' + esc(c.title) + '</span>' +
+      '<span class="desc">' + esc(c.desc) + '</span>';
+    if (c.status === 'published') {
+      var a = c.available || 0, dn = doneCount(c.id);
+      body += '<span class="small muted">' + esc(isEnrolled(c.id) && dn ? t('progressOf', { d: dn, a: a }) : t('lessonsReady', { a: a, t: c.est })) + '</span>';
+      if (isEnrolled(c.id) && a) body += '<div class="meter" role="img" aria-label="' + dn + ' / ' + a + '"><div style="width:' + Math.round(dn / a * 100) + '%"></div></div>';
+      body += '</div>';
+      return '<a class="card course-card" href="#/course/' + c.id + '">' + seal(c) + body + '<span class="muted">' + ICON.chev + '</span></a>';
+    }
+    var on = !!S.notify[c.id];
+    body += '<span class="small muted">' + esc(c.launch ? t('launchOn', { d: c.launch }) : t('launchTBD')) + '</span>' +
+      '<button class="notify' + (on ? ' on' : '') + '" data-notify="' + c.id + '" aria-pressed="' + on + '">' + ICON.bell + esc(on ? t('notifyOn') : t('notifyMe')) + '</button></div>';
+    return '<div class="card course-card planned">' + seal(c, 'muted') + body + '</div>';
+  }
+  function screenCatalogue() {
+    var mine = D.catalogue.filter(function (c) { return c.status === 'published' && isEnrolled(c.id); });
+    var other = D.catalogue.filter(function (c) { return c.status === 'published' && !isEnrolled(c.id); });
+    var planned = D.catalogue.filter(function (c) { return c.status !== 'published'; });
+    var html = '<div class="stack gap-16"><div class="stack gap-4"><h1 class="page-title">' + esc(t('tabCourse')) + '</h1>' +
+      '<span class="small muted" style="font-size:14px">' + esc(t('catalogueSub')) + '</span></div>';
+    [[mine, 'myCourses'], [other, 'otherCourses'], [planned, 'plannedCourses']].forEach(function (g) {
+      if (!g[0].length) return;
+      html += '<section class="stack gap-8"><span class="label">' + esc(t(g[1])) + '</span>' + g[0].map(courseCard).join('') + '</section>';
+    });
+    html += '</div>';
+    setView(html, 'course');
+    view.querySelectorAll('[data-notify]').forEach(function (b) {
+      b.onclick = function () {
+        var id = b.dataset.notify;
+        if (S.notify[id]) delete S.notify[id]; else { S.notify[id] = today(); toast(t('notifyToast')); }
+        save(); screenCatalogue();
+      };
+    });
   }
 
-  var openUnit = null;
-  function screenCourse() {
-    var L = nextLesson();
-    var units = D.course.units;
-    if (!openUnit) openUnit = (L ? unitOf(L.id) : units[1]).id;
+  // ---------- course map ----------
+  var openUnit = {};
+  function screenCourse(cid) {
+    var course = D.courses[cid], c = meta(cid);
+    if (!course) return screenCatalogue();
+    var L = nextLesson(cid);
+    var units = course.units;
+    if (!openUnit[cid]) {
+      var withLessons = units.filter(function (u) { return u.lessons.some(function (l) { return l.available; }); });
+      openUnit[cid] = (L ? unitOf(L.id) : (withLessons[0] || units[0])).id;
+    }
     var total = units.reduce(function (a, u) { return a + u.est; }, 0);
-    var html = '<div class="stack gap-16"><div class="stack gap-4"><h1 class="page-title">' + esc(D.course.title) + '</h1>' +
-      '<span class="small muted" style="font-size:14px">' + esc(t('courseSub', { units: units.length, lessons: total })) + '</span></div>';
+    var html = '<div class="bar"><div class="bar-inner" style="justify-content:flex-start"><a class="icon-btn" style="color:var(--ink)" href="#/course" aria-label="' + esc(t('back')) + '">' + ICON.back + '</a>' +
+      '<span class="bar-title">' + esc(t('tabCourse')) + '</span></div></div>' +
+      '<div class="stack gap-16" style="padding-top:20px"><div class="row" style="gap:14px;align-items:flex-start">' + seal(c, 'lg') +
+      '<div class="stack gap-4"><h1 class="page-title">' + esc(course.title) + '</h1>' +
+      '<span class="small muted" style="font-size:14px">' + esc(t('courseSub', { units: units.length, lessons: total })) + '</span></div></div>' +
+      '<p class="lede">' + esc(c.desc) + '</p>';
+    if (isEnrolled(cid)) {
+      html += '<div class="row between"><span class="small" style="color:var(--ok);font-weight:500">✓ ' + esc(t('enrolled')) + '</span><button class="linkbtn small" id="pause" style="font-size:13px">' + esc(t('pause')) + '</button></div>';
+    } else {
+      html += '<button class="btn" id="enrol">' + esc(t('enrol')) + '</button>';
+    }
     units.forEach(function (u) {
-      if (u.id === openUnit && u.lessons.length) {
+      if (u.id === openUnit[cid] && u.lessons.length) {
         var doneN = u.lessons.filter(function (l) { return S.done[l.id]; }).length;
         html += '<section class="card unit-open stack gap-4"><div class="row between" style="padding:0 8px 8px"><h2 class="serif" style="font-size:18px">' + esc(unitName(u)) + '</h2>' +
           '<span class="small muted">' + doneN + ' / ' + u.lessons.length + '</span></div>';
@@ -163,25 +259,31 @@
         });
         html += '</section>';
       } else {
+        var ready = u.lessons.some(function (l) { return l.available; });
         html += '<button class="unit-row" data-unit="' + u.id + '" aria-expanded="false"><span class="n">' + esc(unitName(u)) + '</span>' +
-          '<span class="small muted">' + esc(u.lessons.length ? t('lessonsCount', { n: u.lessons.length }) : t('inPreparation')) + '</span></button>';
+          '<span class="small muted">' + esc(u.lessons.length ? t('lessonsCount', { n: u.lessons.length }) + (ready ? '' : ' · ' + t('inPreparation')) : t('inPreparation')) + '</span></button>';
       }
     });
     html += '</div>';
     setView(html, 'course');
+    var en = document.getElementById('enrol');
+    if (en) en.onclick = function () { enrol(cid); screenCourse(cid); };
+    var pa = document.getElementById('pause');
+    if (pa) pa.onclick = function () { S.enrolled = S.enrolled.filter(function (x) { return x !== cid; }); save(); toast(t('paused')); screenCourse(cid); };
     view.querySelectorAll('[data-unit]').forEach(function (b) {
       b.addEventListener('click', function () {
         var u = units.filter(function (x) { return x.id === b.dataset.unit; })[0];
-        if (u && u.lessons.length) { openUnit = u.id; screenCourse(); }
+        if (u && u.lessons.length) { openUnit[cid] = u.id; screenCourse(cid); }
         else toast(t('inPreparation'));
       });
     });
   }
 
+  // ---------- lesson ----------
   function lessonBar(L, extra) {
-    var u = unitOf(L.id);
-    return '<div class="bar"><div class="bar-inner"><a class="icon-btn" style="color:var(--ink)" href="#/today" aria-label="' + esc(t('back')) + '">' + ICON.back + '</a>' +
-      '<span class="bar-title">' + esc(unitName(u).split('　')[0]) + ' · ' + L.n + ' / ' + u.lessons.length + '</span>' + (extra || '<span style="width:44px"></span>') + '</div>' +
+    var u = unitOf(L.id), c = meta(L.course);
+    return '<div class="bar"><div class="bar-inner"><a class="icon-btn" style="color:var(--ink)" href="#/course/' + L.course + '" aria-label="' + esc(t('back')) + '">' + ICON.back + '</a>' +
+      '<span class="bar-title">' + esc(c.title) + ' · ' + esc(unitName(u).split('　')[0]) + ' · ' + L.n + ' / ' + u.lessons.length + '</span>' + (extra || '<span style="width:44px"></span>') + '</div>' +
       '<div class="progress"><div id="readProg" style="width:0%"></div></div></div>';
   }
   function screenLesson(id) {
@@ -199,6 +301,9 @@
         return '<div class="stack gap-4">' + (x.src ? '<span class="src">' + esc(x.src) + '</span>' : '') + '<p>' + esc(x.text) + '</p></div>';
       }).join('');
       var chips = L.terms.map(function (name, i) { return '<a class="chip" href="#/glossary/' + L.termIds[i] + '">' + esc(name) + '</a>'; }).join('');
+      var reflect = (L.reflect && L.reflect.length) ?
+        '<section class="reflect stack gap-8"><div class="row between" style="font-family:var(--sans)"><span class="label">' + esc(t('selfCheck')) + '</span><span class="small muted">' + esc(t('selfCheckNote')) + '</span></div>' +
+        '<ol>' + L.reflect.map(function (q) { return '<li>' + esc(q) + '</li>'; }).join('') + '</ol></section>' : '';
       var html = lessonBar(L, tools) +
         '<article class="article stack gap-20">' +
         '<div class="stack gap-8"><span class="eyebrow" style="font-family:var(--sans)">' + esc(t('lessonN', { n: L.n })) + ' · ' + esc(t('minutes', { m: L.minutes })) + '</span>' +
@@ -209,6 +314,7 @@
         '<section class="teaching stack gap-12"><span class="eyebrow" style="font-family:var(--sans)">' + esc(t('teaching')) + '</span>' + teach + '</section>' +
         '<section class="stack gap-8"><span class="label" style="font-family:var(--sans)">' + esc(t('keyTerms')) + '</span><div class="chips">' + chips + '</div></section>' +
         '<section class="meditate stack gap-4"><span class="label" style="font-family:var(--sans)">' + esc(t('meditation')) + '</span><p style="font-size:var(--fs)">' + esc(L.meditation) + '</p></section>' +
+        reflect +
         '<a class="btn" href="#/quiz/' + L.id + '" style="font-family:var(--sans)">' + esc(t('toQuiz')) + '</a></article>';
       setView(html, null);
       document.getElementById('smaller').onclick = function () { S.fs = Math.max(15, S.fs - 2); save(); applyFont(); };
@@ -227,6 +333,7 @@
     window.addEventListener('scroll', upd, { passive: true }); upd();
   }
 
+  // ---------- quiz ----------
   function shuffle(n, seed) {
     var a = []; for (var i = 0; i < n; i++) a.push(i);
     for (var j = n - 1; j > 0; j--) { seed = (seed * 9301 + 49297) % 233280; var k = Math.floor(seed / 233280 * (j + 1)); var tmp = a[j]; a[j] = a[k]; a[k] = tmp; }
@@ -243,7 +350,7 @@
           Q.map(function (_, i) { return '<span class="' + (st.done || i < st.qi || (i === st.qi && st.picked !== null) ? 'on' : '') + '"></span>'; }).join('') + '</div></div>';
         if (st.done) {
           setView(head + '<div class="stack gap-16" style="align-items:center;text-align:center;padding:40px 8px 0">' +
-            '<div class="done-seal" aria-hidden="true">道</div><h1 class="serif" style="font-size:24px">' + esc(t('lessonDone', { n: L.n })) + '</h1>' +
+            '<div class="done-seal" aria-hidden="true">' + esc(meta(L.course).seal || '道') + '</div><h1 class="serif" style="font-size:24px">' + esc(t('lessonDone', { n: L.n })) + '</h1>' +
             '<p style="font-size:16px;color:var(--ink-2)">' + esc(t('score', { s: st.score, t: n })) + '</p>' +
             '<p class="quote" style="margin-top:8px">' + esc(t('closingQuote')) + '<br><span class="small muted" style="font-family:var(--sans)">' + esc(t('closingSrc')) + '</span></p>' +
             '<a class="btn" href="#/today" style="margin-top:24px">' + esc(t('backToday')) + '</a><button class="btn ghost" id="retry">' + esc(t('retry')) + '</button></div>', null);
@@ -274,10 +381,12 @@
   function finishLesson(L, score) {
     var first = !S.done[L.id];
     S.done[L.id] = { score: score, of: L.quiz.length, date: today() };
+    enrol(L.course);
     if (first) L.termIds.forEach(function (gid) { if (!S.cards[gid]) S.cards[gid] = { due: today(), ivl: 0 }; });
     save();
   }
 
+  // ---------- review ----------
   function screenReview() {
     var queue = dueCards();
     var st = { i: 0, back: false, total: queue.length };
@@ -309,6 +418,7 @@
     draw();
   }
 
+  // ---------- glossary ----------
   function screenGlossary(focusId) {
     var html = '<div class="stack gap-12"><h1 class="page-title">' + esc(t('glossary')) + '</h1>' +
       '<label class="search"><span class="muted" aria-hidden="true">' + ICON.glossary + '</span><input id="q" type="search" placeholder="' + esc(t('searchPlaceholder')) + '" aria-label="' + esc(t('searchPlaceholder')) + '" autocomplete="off"></label>' +
@@ -322,8 +432,11 @@
       });
       document.getElementById('gcount').textContent = t('termsCount', { n: items.length });
       document.getElementById('glist').innerHTML = items.length ? items.map(function (g) {
-        var l = lessonTitle[g.lesson];
-        var from = l ? (l.available ? '<a class="ref" href="#/lesson/' + l.id + '">' + esc(t('fromLesson', { t: t('lessonN', { n: l.n }) + '　' + l.title })) + '</a>' : '<span class="ref">' + esc(t('fromLesson', { t: t('lessonN', { n: l.n }) })) + '</span>') : '';
+        var l = lessonTitle[g.lesson], from = '';
+        if (l) {
+          var label = meta(l.course).title + '　' + t('lessonN', { n: l.n }) + (l.available ? '　' + l.title : '');
+          from = l.available ? '<a class="ref" href="#/lesson/' + l.id + '">' + esc(t('fromLesson', { t: label })) + '</a>' : '<span class="ref">' + esc(t('fromLesson', { t: label })) + '</span>';
+        }
         return '<div class="gitem stack gap-4' + (g.id === focusId ? ' hl' : '') + '" id="g-' + g.id + '"><div class="row" style="gap:10px;align-items:baseline;flex-wrap:wrap"><span class="term">' + esc(g.term) + '</span><span class="latin">' + esc(g.latin) + '</span></div>' +
           '<p class="def">' + esc(g.def) + '</p><div class="row" style="gap:12px;flex-wrap:wrap"><span class="small muted">' + esc(g.ref) + '</span>' + from + '</div></div>';
       }).join('') : '<p class="muted" style="padding:24px 0">' + esc(t('noResults')) + '</p>';
@@ -333,6 +446,7 @@
     if (focusId) { var el = document.getElementById('g-' + focusId); if (el) el.scrollIntoView({ block: 'center' }); }
   }
 
+  // ---------- settings ----------
   function screenSettings() {
     var html = '<div class="bar"><div class="bar-inner" style="justify-content:flex-start"><a class="icon-btn" style="color:var(--ink)" href="#/today" aria-label="' + esc(t('back')) + '">' + ICON.back + '</a>' +
       '<h1 class="serif" style="font-size:20px;font-weight:700">' + esc(t('settings')) + '</h1></div></div>' +
@@ -354,7 +468,7 @@
     document.getElementById('smaller').onclick = function () { S.fs = Math.max(15, S.fs - 2); save(); applyFont(); document.getElementById('fsv').textContent = S.fs; };
     document.getElementById('larger').onclick = function () { S.fs = Math.min(25, S.fs + 2); save(); applyFont(); document.getElementById('fsv').textContent = S.fs; };
     document.getElementById('reset').onclick = function () {
-      if (window.confirm(t('resetConfirm'))) { S.done = {}; S.cards = {}; save(); location.hash = '#/today'; }
+      if (window.confirm(t('resetConfirm'))) { S.done = {}; S.cards = {}; S.enrolled = null; save(); initEnrolled(); location.hash = '#/today'; }
     };
   }
 
@@ -370,7 +484,7 @@
   function route() {
     var h = (location.hash || '#/today').slice(2).split('/');
     switch (h[0]) {
-      case 'course': return screenCourse();
+      case 'course': return h[1] ? screenCourse(h[1]) : screenCatalogue();
       case 'lesson': return screenLesson(h[1]);
       case 'quiz': return screenQuiz(h[1]);
       case 'review': return screenReview();
