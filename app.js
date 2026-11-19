@@ -3,8 +3,14 @@
   'use strict';
 
   // ---------- storage ----------
+  // done[id] = {score, of, date, first}; cards[gid] = {due, ivl}; met[gid] = date; days[ymd] = 1;
+  // pace[cid] = 'daily' | '3w' | 'weekdays'; notify[cid] or notify[cid + '/' + mid] = date followed
   var KEY = 'xundao.v1';
-  var DEFAULTS = { script: 'hant', fs: 17, done: {}, cards: {}, enrolled: null, notify: {} };
+  var DEFAULTS = {
+    script: 'hant', fs: 17, done: {}, cards: {}, enrolled: null, notify: {},
+    met: null, days: {}, pace: {}, paceDefault: 'daily', cap: 2, revCap: 20, rev: { d: '', n: 0 },
+    remind: '07:30', last: '', recapOn: '', onboarded: false
+  };
   function load() {
     try {
       var s = JSON.parse(localStorage.getItem(KEY) || 'null');
@@ -13,10 +19,15 @@
   }
   var S = load();
   function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* private mode: keep in memory */ } }
+  // data from earlier versions
+  if (!S.met) { S.met = {}; Object.keys(S.cards).forEach(function (g) { S.met[g] = S.cards[g].due || ''; }); }
+  Object.keys(S.done).forEach(function (id) { if (!S.done[id].first) S.done[id].first = S.done[id].date || ''; });
+  if (Object.keys(S.done).length) S.onboarded = true;
 
   // ---------- data ----------
   // D.catalogue: every course (published + planned), display order
-  // D.courses[id]: outline of a published course; D.lessonCourse[lessonId] = courseId
+  // D.courses[id]: {id, title, modules:[{id, num, title, desc, summary, launch, est, status, lessons:[...]}]}
+  // D.lessonCourse[lessonId] = courseId
   var D = { ui: null, catalogue: [], courses: {}, lessonCourse: {}, glossary: null, gById: {}, lessons: {} };
   function getJSON(url) {
     return fetch(url).then(function (r) { if (!r.ok) throw new Error(url + ' ' + r.status); return r.json(); });
@@ -36,7 +47,7 @@
       .then(function (list) {
         list.forEach(function (course) {
           D.courses[course.id] = course;
-          course.units.forEach(function (u) { u.lessons.forEach(function (l) { D.lessonCourse[l.id] = course.id; }); });
+          course.modules.forEach(function (m) { m.lessons.forEach(function (l) { l.course = course.id; l.mod = m; D.lessonCourse[l.id] = course.id; }); });
         });
         initEnrolled();
       });
@@ -46,7 +57,6 @@
       S.enrolled = S.enrolled.filter(function (id) { return D.courses[id]; });
       return;
     }
-    // first run (or data from the single-course version): enrol courses already started, else the first course
     var started = Object.keys(D.courses).filter(function (cid) {
       return Object.keys(S.done).some(function (lid) { return D.lessonCourse[lid] === cid; });
     });
@@ -71,11 +81,14 @@
   function today() { return ymd(new Date()); }
   function ymd(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
   function addDays(n) { var d = new Date(); d.setDate(d.getDate() + n); return ymd(d); }
+  function daysSince(s) { if (!s) return 0; var a = new Date(s + 'T00:00:00'), b = new Date(today() + 'T00:00:00'); return Math.round((b - a) / 864e5); }
+  function month(s) { var m = /^(\d{4})-(\d{1,2})/.exec(s || ''); return m ? t('monthFmt', { y: m[1], m: +m[2] }) : ''; }
   function meta(cid) { return D.catalogue.filter(function (c) { return c.id === cid; })[0]; }
+  function lessonById(id) { var cid = D.lessonCourse[id]; return cid ? allLessons(cid).filter(function (l) { return l.id === id; })[0] : null; }
   function allLessons(cid) {
-    var out = [], ids = cid ? [cid] : Object.keys(D.courses);
-    ids.forEach(function (id) {
-      D.courses[id].units.forEach(function (u) { u.lessons.forEach(function (l) { out.push(Object.assign({ unit: u, course: id }, l)); }); });
+    var out = [];
+    (cid ? [cid] : Object.keys(D.courses)).forEach(function (id) {
+      D.courses[id].modules.forEach(function (m) { out = out.concat(m.lessons); });
     });
     return out;
   }
@@ -86,17 +99,45 @@
     for (var i = 0; i < avail.length; i++) if (!S.done[avail[i].id]) return avail[i];
     return null;
   }
-  function unitOf(id) {
-    var cid = D.lessonCourse[id], u = null;
-    if (!cid) return null;
-    D.courses[cid].units.forEach(function (x) { x.lessons.forEach(function (l) { if (l.id === id) u = x; }); });
-    return u;
+  function newToday(cid) { var d = today(); return allLessons(cid).filter(function (l) { return S.done[l.id] && S.done[l.id].first === d; }).length; }
+  // 'done' | 'open' | 'prev' (an earlier lesson is unfinished) | 'cap' (daily limit reached) | 'prep' (not written yet)
+  function lessonState(l) {
+    if (!l.available) return 'prep';
+    if (S.done[l.id]) return 'done';
+    var avail = available(l.course);
+    for (var i = 0; i < avail.length && avail[i].id !== l.id; i++) if (!S.done[avail[i].id]) return 'prev';
+    if (newToday(l.course) >= S.cap) return 'cap';
+    return 'open';
+  }
+  function paceOf(cid) { return S.pace[cid] || S.paceDefault; }
+  function studyDay(cid) {
+    var w = new Date().getDay(), p = paceOf(cid);
+    if (p === '3w') return w === 1 || w === 3 || w === 5;
+    if (p === 'weekdays') return w >= 1 && w <= 5;
+    return true;
   }
   function isEnrolled(cid) { return S.enrolled.indexOf(cid) >= 0; }
   function enrol(cid) { if (!isEnrolled(cid)) { S.enrolled.push(cid); save(); } }
-  function dueCards() { var d = today(); return Object.keys(S.cards).filter(function (id) { return D.gById[id] && S.cards[id].due <= d; }); }
-  function unitName(u) { return u.num === '導論' || u.num === '导论' ? u.num + '　' + u.title : (S.script === 'hans' ? '第' + u.num + '单元　' : '第' + u.num + '單元　') + u.title; }
+  function allDue() { var d = today(); return Object.keys(S.cards).filter(function (id) { return D.gById[id] && S.cards[id].due <= d; }); }
+  // review cap: at most S.revCap cards a day, oldest first, so a long absence is spread over several days
+  function dueCards() {
+    var left = Math.max(0, S.revCap - (S.rev.d === today() ? S.rev.n : 0));
+    return allDue().sort(function (a, b) { return S.cards[a].due < S.cards[b].due ? -1 : 1; }).slice(0, left);
+  }
+  function markDay() { S.days[today()] = 1; S.last = today(); }
+  function daysThisMonth() { var p = today().slice(0, 7); return Object.keys(S.days).filter(function (d) { return d.slice(0, 7) === p; }).length; }
+  function modName(m) { return t('moduleN', { num: m.num }) + '　' + m.title; }
   function seal(c, cls) { return '<span class="seal ' + (cls || '') + '" aria-hidden="true">' + esc(c.seal || '道') + '</span>'; }
+  // the module after the last one the user can reach; used when all published lessons are read
+  function upcomingModule(cid) {
+    var mods = D.courses[cid].modules, last = -1;
+    function incomplete(m) { return m.status === 'planned' || m.lessons.length < m.est || m.lessons.some(function (l) { return !l.available; }); }
+    mods.forEach(function (m, i) { if (m.available) last = i; });
+    for (var i = last; i < mods.length; i++) if (i >= 0 && incomplete(mods[i])) return mods[i];
+    for (var j = 0; j < mods.length; j++) if (incomplete(mods[j])) return mods[j];
+    return null;
+  }
+  function moduleComplete(m) { return m.lessons.length && m.lessons.length >= m.est && m.lessons.every(function (l) { return l.available && S.done[l.id]; }); }
 
   var ICON = {
     today: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
@@ -107,7 +148,9 @@
     back: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>',
     x: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>',
     chev: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>',
-    bell: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>'
+    bell: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>',
+    lock: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+    cal: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg>'
   };
 
   // ---------- shell ----------
@@ -127,42 +170,106 @@
   function setView(html, active) { view.innerHTML = html; renderTabs(active); window.scrollTo(0, 0); }
   function toast(msg) {
     var el = document.createElement('div'); el.className = 'toast'; el.setAttribute('role', 'status'); el.textContent = msg;
-    document.body.appendChild(el); setTimeout(function () { el.remove(); }, 2200);
+    document.body.appendChild(el); setTimeout(function () { el.remove(); }, 2400);
   }
   function applyFont() { document.documentElement.style.setProperty('--fs', S.fs + 'px'); }
+  function segHtml(name, opts, cur) {
+    return '<div class="seg" style="grid-template-columns:repeat(' + opts.length + ',minmax(0,1fr));width:auto" role="group">' + opts.map(function (o) {
+      return '<button data-' + name + '="' + o[0] + '" aria-pressed="' + (String(o[0]) === String(cur)) + '">' + esc(o[1]) + '</button>';
+    }).join('') + '</div>';
+  }
+  function paceOpts() { return [['daily', t('paceDaily')], ['3w', t('pace3w')], ['weekdays', t('paceWeekdays')]]; }
+
+  // ---------- calendar reminder (.ics): works offline, everywhere, no push service ----------
+  function downloadICS() {
+    var hm = (S.remind || '07:30').split(':'), d = new Date();
+    d.setDate(d.getDate() + 1); d.setHours(+hm[0], +hm[1], 0, 0);
+    function stamp(x, utc) {
+      var p = function (n) { return String(n).padStart(2, '0'); };
+      return utc ? x.getUTCFullYear() + p(x.getUTCMonth() + 1) + p(x.getUTCDate()) + 'T' + p(x.getUTCHours()) + p(x.getUTCMinutes()) + '00Z'
+        : x.getFullYear() + p(x.getMonth() + 1) + p(x.getDate()) + 'T' + p(x.getHours()) + p(x.getMinutes()) + '00';
+    }
+    var rule = { daily: 'FREQ=DAILY', '3w': 'FREQ=WEEKLY;BYDAY=MO,WE,FR', weekdays: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR' }[S.paceDefault] || 'FREQ=DAILY';
+    var url = location.href.split('#')[0] + '#/today';
+    var ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//xundao//reminder//ZH', 'CALSCALE:GREGORIAN', 'BEGIN:VEVENT',
+      'UID:xundao-daily-' + Date.now() + '@xundao', 'DTSTAMP:' + stamp(new Date(), true), 'DTSTART:' + stamp(d), 'DURATION:PT10M',
+      'RRULE:' + rule, 'SUMMARY:' + t('icsTitle'), 'DESCRIPTION:' + t('icsDesc') + url, 'URL:' + url,
+      'BEGIN:VALARM', 'TRIGGER:PT0M', 'ACTION:DISPLAY', 'DESCRIPTION:' + t('icsTitle'), 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([ics], { type: 'text/calendar;charset=utf-8' }));
+    a.download = 'xundao-reminder.ics';
+    document.body.appendChild(a); a.click(); a.remove();
+    toast(t('calendarToast'));
+  }
+
+  // ---------- onboarding ----------
+  function screenStart() {
+    var anchors = [['07:00', t('anchorMorning')], ['12:30', t('anchorNoon')], ['21:00', t('anchorEvening')]];
+    var html = '<div class="stack gap-20" style="padding-top:24px"><div class="brand"><div class="seal" aria-hidden="true">道</div><span class="brand-name">' + esc(t('appName')) + '</span></div>' +
+      '<h1 class="serif" style="font-size:26px;font-weight:700">' + esc(t('obTitle')) + '</h1><p class="lede">' + esc(t('obText')) + '</p>' +
+      '<section class="stack gap-8"><span class="label">' + esc(t('pace')) + '</span>' + segHtml('pace', paceOpts(), S.paceDefault) + '</section>' +
+      '<section class="stack gap-8"><span class="label">' + esc(t('obWhen')) + '</span>' + segHtml('anchor', anchors, S.remind) +
+      '<label class="setrow" style="border:0;min-height:44px"><span>' + esc(t('remindTime')) + '</span><input id="rt" type="time" value="' + esc(S.remind) + '" class="time"></label></section>' +
+      '<button class="btn ghost-line" id="ics">' + ICON.cal + esc(t('obCalendar')) + '</button>' +
+      '<button class="btn" id="go">' + esc(t('obStart')) + '</button></div>';
+    setView(html, null);
+    view.querySelectorAll('[data-pace]').forEach(function (b) { b.onclick = function () { S.paceDefault = b.dataset.pace; save(); screenStart(); }; });
+    view.querySelectorAll('[data-anchor]').forEach(function (b) { b.onclick = function () { S.remind = b.dataset.anchor; save(); screenStart(); }; });
+    document.getElementById('rt').onchange = function (e) { S.remind = e.target.value || S.remind; save(); };
+    document.getElementById('ics').onclick = downloadICS;
+    document.getElementById('go').onclick = function () { S.onboarded = true; S.last = today(); save(); location.hash = '#/today'; route(); };
+  }
+
+  // ---------- welcome back (7+ days away) ----------
+  function screenRecap() {
+    var recent = Object.keys(S.done).filter(function (id) { return D.lessonCourse[id]; })
+      .sort(function (a, b) { return (S.done[b].date || '') < (S.done[a].date || '') ? -1 : 1; }).slice(0, 5);
+    var html = '<div class="stack gap-20" style="padding-top:24px"><h1 class="serif" style="font-size:26px;font-weight:700">' + esc(t('welcomeBack')) + '</h1>' +
+      '<p class="lede">' + esc(t('welcomeBackSub')) + '</p><div class="stack gap-12" id="recap"></div>' +
+      (allDue().length ? '<p class="small muted">' + esc(t('recapNote')) + '</p>' : '') +
+      '<button class="btn" id="cont">' + esc(t('continue')) + '</button></div>';
+    setView(html, null);
+    S.recapOn = today(); S.last = today(); save();
+    var box = document.getElementById('recap');
+    Promise.all(recent.map(function (id) { return getLesson(id).catch(function () { return null; }); })).then(function (ls) {
+      box.innerHTML = ls.filter(Boolean).map(function (L) {
+        return '<div class="keypoint stack gap-4"><span class="small muted">' + esc(meta(L.course).title) + ' · ' + esc(L.title) + '</span><p class="serif" style="font-size:16px">' + esc(L.keypoint) + '</p></div>';
+      }).join('');
+    });
+    document.getElementById('cont').onclick = function () { location.hash = '#/today'; route(); };
+  }
 
   // ---------- today ----------
+  function newContentBanner() {
+    var items = [];
+    Object.keys(S.notify).forEach(function (k) {
+      var p = k.split('/'), c = meta(p[0]);
+      if (!c) return;
+      if (p.length === 1 && c.status === 'published') { items.push('<a href="#/course/' + c.id + '">' + esc(c.title) + '</a>'); delete S.notify[k]; }
+      if (p.length === 2 && D.courses[p[0]]) {
+        var m = D.courses[p[0]].modules.filter(function (x) { return x.id === p[1]; })[0];
+        if (m && m.status === 'open') { items.push('<a href="#/course/' + c.id + '">' + esc(c.title) + ' · ' + esc(modName(m)) + '</a>'); delete S.notify[k]; }
+      }
+    });
+    if (items.length) save();
+    return items.length ? '<section class="card banner stack gap-4"><span class="label" style="color:var(--ok)">' + esc(t('newContent')) + '</span>' + items.join('') + '</section>' : '';
+  }
   function screenToday() {
     var d = new Date();
-    var due = dueCards().length;
+    var due = dueCards().length, dm = daysThisMonth();
     var html = '<div class="stack gap-20">' +
       '<header class="top"><div class="brand"><div class="seal" aria-hidden="true">道</div><span class="brand-name">' + esc(t('appName')) + '</span></div>' +
       '<a class="icon-btn" href="#/settings" aria-label="' + esc(t('settings')) + '">' + ICON.gear + '</a></header>' +
-      '<div class="stack gap-4"><span class="small muted">' + esc(t('dateFmt', { m: d.getMonth() + 1, d: d.getDate(), w: D.ui.weekdays[d.getDay()] })) + '</span>' +
+      '<div class="stack gap-4"><span class="small muted">' + esc(t('dateFmt', { m: d.getMonth() + 1, d: d.getDate(), w: D.ui.weekdays[d.getDay()] })) +
+      (dm ? '　·　' + esc(t('daysThisMonth', { n: dm })) : '') + '</span>' +
       '<h1 class="serif" style="font-weight:600;font-size:26px">' + esc(t('greeting')) + '</h1></div>';
+    html += newContentBanner();
     var active = D.catalogue.filter(function (c) { return D.courses[c.id] && isEnrolled(c.id); });
     if (!active.length) {
       html += '<section class="card stack gap-12"><h2 class="serif" style="font-size:20px">' + esc(t('noActive')) + '</h2><p class="lede">' + esc(t('noActiveSub')) + '</p>' +
         '<a class="btn" href="#/course">' + esc(t('browse')) + '</a></section>';
     }
-    active.forEach(function (c) {
-      var L = nextLesson(c.id);
-      var head = '<a class="course-head" href="#/course/' + c.id + '">' + seal(c, 'sm') + '<span class="course-name">' + esc(c.title) + '</span><span class="muted">' + ICON.chev + '</span></a>';
-      if (L) {
-        var u = L.unit, doneN = u.lessons.filter(function (l) { return S.done[l.id]; }).length;
-        html += '<section class="card stack gap-12" aria-label="' + esc(c.title) + '">' + head +
-          '<span class="small muted">' + esc(unitName(u)) + ' · ' + esc(t('lessonN', { n: L.n })) + '</span>' +
-          '<h2 class="lesson-title">' + esc(L.title) + '</h2>' +
-          '<p class="lede" data-key="' + L.id + '"></p>' +
-          '<div class="row gap-12 small muted"><span>' + esc(t('minutes', { m: L.minutes })) + '</span><span aria-hidden="true">·</span><span>' + esc(t('quizN', { n: 3 })) + '</span></div>' +
-          '<a class="btn" href="#/lesson/' + L.id + '">' + esc(t('startReading')) + '</a>' +
-          '<div class="stack gap-8" style="margin-top:4px"><div class="row between"><span class="small" style="font-weight:500">' + esc(unitName(u)) + '</span><span class="small muted">' + doneN + ' / ' + u.lessons.length + '</span></div>' +
-          '<div class="dots" style="grid-template-columns:repeat(' + u.lessons.length + ',minmax(0,1fr))" role="img" aria-label="' + doneN + ' / ' + u.lessons.length + '">' +
-          u.lessons.map(function (l) { return '<span class="' + (S.done[l.id] ? 'on' : (l.id === L.id ? 'cur' : '')) + '"></span>'; }).join('') + '</div></div></section>';
-      } else {
-        html += '<section class="card stack gap-8">' + head + '<h2 class="serif" style="font-size:18px">' + esc(t('courseDone')) + '</h2><p class="lede">' + esc(t('courseDoneSub')) + '</p></section>';
-      }
-    });
+    active.forEach(function (c) { html += todayCard(c); });
     html += courseStrip();
     html += '<a class="card card-link" href="#/review"><div class="stack gap-4"><span style="font-size:15px;font-weight:500">' + esc(t('reviewCards')) + '</span>' +
       '<span class="small muted">' + esc(due ? t('cardsDue', { n: due }) : t('noCardsDue')) + '</span></div><span class="muted">' + ICON.chev + '</span></a></div>';
@@ -170,12 +277,47 @@
     view.querySelectorAll('[data-key]').forEach(function (el) {
       getLesson(el.dataset.key).then(function (x) { el.textContent = x.keypoint; }).catch(function () {});
     });
+    view.querySelectorAll('[data-anyway]').forEach(function (b) { b.onclick = function () { location.hash = '#/lesson/' + b.dataset.anyway; }; });
   }
-  // every course, so a new user sees at once what is offered
+  function moduleDots(m, curId) {
+    var n = m.lessons.length, doneN = m.lessons.filter(function (l) { return S.done[l.id]; }).length;
+    return '<div class="stack gap-8" style="margin-top:4px"><div class="row between"><span class="small" style="font-weight:500">' + esc(modName(m)) + '</span><span class="small muted">' + doneN + ' / ' + n + '</span></div>' +
+      '<div class="dots" style="grid-template-columns:repeat(' + n + ',minmax(0,1fr))" role="img" aria-label="' + doneN + ' / ' + n + '">' +
+      m.lessons.map(function (l) { return '<span class="' + (S.done[l.id] ? 'on' : (l.id === curId ? 'cur' : '')) + '"></span>'; }).join('') + '</div></div>';
+  }
+  function todayCard(c) {
+    var L = nextLesson(c.id);
+    var head = '<a class="course-head" href="#/course/' + c.id + '">' + seal(c, 'sm') + '<span class="course-name">' + esc(c.title) + '</span><span class="muted">' + ICON.chev + '</span></a>';
+    if (!L) {
+      var up = upcomingModule(c.id), line = '';
+      if (up) {
+        var key = c.id + '/' + up.id;
+        if (!S.notify[key]) { S.notify[key] = today(); save(); }
+        line = up.launch ? t('nextModuleOn', { t: up.title, d: month(up.launch) }) : t('nextModuleTBD', { t: up.title });
+      }
+      return '<section class="card stack gap-8">' + head + '<h2 class="serif" style="font-size:18px">' + esc(up ? t('endPublished') : t('courseDone')) + '</h2>' +
+        (up ? '<p class="small" style="color:var(--ok)">' + ICON.bell + ' ' + esc(line) + '</p><p class="lede">' + esc(t('endPublishedSub')) + '</p>' : '<p class="lede">' + esc(t('courseDoneSub')) + '</p>') + '</section>';
+    }
+    var st = lessonState(L), m = L.mod;
+    var info = '<span class="small muted">' + esc(modName(m)) + ' · ' + esc(t('lessonN', { n: L.n })) + '</span>' +
+      '<h2 class="lesson-title">' + esc(L.title) + '</h2>';
+    if (st === 'cap') {
+      return '<section class="card stack gap-12">' + head + '<h2 class="serif" style="font-size:18px">' + esc(t('capReached')) + '</h2>' +
+        '<p class="lede">' + esc(t('capReachedSub')) + '</p><span class="small muted">' + ICON.lock + ' ' + esc(t('nextUp', { t: L.title })) + '</span>' + moduleDots(m, L.id) + '</section>';
+    }
+    var body = '<p class="lede" data-key="' + L.id + '"></p>' +
+      '<div class="row gap-12 small muted"><span>' + esc(t('minutes', { m: L.minutes })) + '</span><span aria-hidden="true">·</span><span>' + esc(t('quizN', { n: 3 })) + '</span></div>';
+    if (!studyDay(c.id) && newToday(c.id) === 0) {
+      return '<section class="card stack gap-12">' + head + '<h2 class="serif" style="font-size:18px">' + esc(t('restDay')) + '</h2><p class="lede">' + esc(t('restDaySub')) + '</p>' +
+        '<span class="small muted">' + esc(t('nextUp', { t: L.title })) + '</span><button class="btn ghost-line" data-anyway="' + L.id + '">' + esc(t('studyAnyway')) + '</button>' + moduleDots(m, L.id) + '</section>';
+    }
+    return '<section class="card stack gap-12" aria-label="' + esc(c.title) + '">' + head + info + body +
+      '<a class="btn" href="#/lesson/' + L.id + '">' + esc(t('startReading')) + '</a>' + moduleDots(m, L.id) + '</section>';
+  }
   function courseStrip() {
     var rows = D.catalogue.map(function (c) {
       var pub = c.status === 'published';
-      var status = !pub ? t('plannedCourses') : isEnrolled(c.id) ? t('enrolled') + ' · ' + t('progressOf', { d: doneCount(c.id), a: c.available || 0 }) : t('lessonsReady', { a: c.available || 0, t: c.est });
+      var status = !pub ? (c.launch ? t('launchOn', { d: month(c.launch) }) : t('plannedCourses')) : isEnrolled(c.id) ? t('enrolled') + ' · ' + t('progressOf', { d: doneCount(c.id), a: c.available || 0 }) : t('lessonsReady', { a: c.available || 0, t: c.est });
       return '<a class="mini-course' + (pub ? '' : ' planned') + '" href="#/course' + (pub ? '/' + c.id : '') + '">' + seal(c, pub ? 'sm' : 'sm muted') +
         '<span class="stack" style="flex:1;min-width:0"><span class="mc-title">' + esc(c.title) + '</span><span class="small muted">' + esc(status) + '</span></span>' +
         '<span class="muted">' + ICON.chev + '</span></a>';
@@ -183,6 +325,7 @@
     return '<section class="stack gap-8"><div class="row between"><span style="font-size:15px;font-weight:500">' + esc(t('allCourses')) + '</span>' +
       '<a class="small" href="#/course" style="text-decoration:none">' + esc(t('seeAll')) + '</a></div><div class="card mini-list">' + rows + '</div></section>';
   }
+
   // ---------- catalogue ----------
   function courseCard(c) {
     var body = '<div class="stack gap-4" style="flex:1;min-width:0"><span class="course-name">' + esc(c.title) + '</span>' +
@@ -195,9 +338,19 @@
       return '<a class="card course-card" href="#/course/' + c.id + '">' + seal(c) + body + '<span class="muted">' + ICON.chev + '</span></a>';
     }
     var on = !!S.notify[c.id];
-    body += '<span class="small muted">' + esc(c.launch ? t('launchOn', { d: c.launch }) : t('launchTBD')) + '</span>' +
+    body += '<span class="small muted">' + esc(c.launch ? t('launchOn', { d: month(c.launch) }) : t('launchTBD')) + '</span>' +
       '<button class="notify' + (on ? ' on' : '') + '" data-notify="' + c.id + '" aria-pressed="' + on + '">' + ICON.bell + esc(on ? t('notifyOn') : t('notifyMe')) + '</button></div>';
     return '<div class="card course-card planned">' + seal(c, 'muted') + body + '</div>';
+  }
+  function bindNotify(redraw) {
+    view.querySelectorAll('[data-notify]').forEach(function (b) {
+      b.onclick = function (e) {
+        e.preventDefault(); e.stopPropagation();
+        var id = b.dataset.notify;
+        if (S.notify[id]) delete S.notify[id]; else { S.notify[id] = today(); toast(t('notifyToast')); }
+        save(); redraw();
+      };
+    });
   }
   function screenCatalogue() {
     var mine = D.catalogue.filter(function (c) { return c.status === 'published' && isEnrolled(c.id); });
@@ -211,57 +364,55 @@
     });
     html += '</div>';
     setView(html, 'course');
-    view.querySelectorAll('[data-notify]').forEach(function (b) {
-      b.onclick = function () {
-        var id = b.dataset.notify;
-        if (S.notify[id]) delete S.notify[id]; else { S.notify[id] = today(); toast(t('notifyToast')); }
-        save(); screenCatalogue();
-      };
-    });
+    bindNotify(screenCatalogue);
   }
 
-  // ---------- course map ----------
-  var openUnit = {};
+  // ---------- course map: every module, published or planned ----------
+  var openMod = {};
   function screenCourse(cid) {
     var course = D.courses[cid], c = meta(cid);
     if (!course) return screenCatalogue();
-    var L = nextLesson(cid);
-    var units = course.units;
-    if (!openUnit[cid]) {
-      var withLessons = units.filter(function (u) { return u.lessons.some(function (l) { return l.available; }); });
-      openUnit[cid] = (L ? unitOf(L.id) : (withLessons[0] || units[0])).id;
+    var L = nextLesson(cid), mods = course.modules;
+    if (!openMod[cid]) {
+      var first = mods.filter(function (m) { return m.status === 'open'; })[0];
+      openMod[cid] = (L ? L.mod : (first || mods[0])).id;
     }
-    var total = units.reduce(function (a, u) { return a + u.est; }, 0);
+    var total = mods.reduce(function (a, m) { return a + m.est; }, 0);
     var html = '<div class="bar"><div class="bar-inner" style="justify-content:flex-start"><a class="icon-btn" style="color:var(--ink)" href="#/course" aria-label="' + esc(t('back')) + '">' + ICON.back + '</a>' +
       '<span class="bar-title">' + esc(t('tabCourse')) + '</span></div></div>' +
       '<div class="stack gap-16" style="padding-top:20px"><div class="row" style="gap:14px;align-items:flex-start">' + seal(c, 'lg') +
       '<div class="stack gap-4"><h1 class="page-title">' + esc(course.title) + '</h1>' +
-      '<span class="small muted" style="font-size:14px">' + esc(t('courseSub', { units: units.length, lessons: total })) + '</span></div></div>' +
+      '<span class="small muted" style="font-size:14px">' + esc(t('courseSub', { modules: mods.length, lessons: total })) + '</span></div></div>' +
       '<p class="lede">' + esc(c.desc) + '</p>';
     if (isEnrolled(cid)) {
-      html += '<div class="row between"><span class="small" style="color:var(--ok);font-weight:500">✓ ' + esc(t('enrolled')) + '</span><button class="linkbtn small" id="pause" style="font-size:13px">' + esc(t('pause')) + '</button></div>';
+      html += '<div class="row between"><span class="small" style="color:var(--ok);font-weight:500">✓ ' + esc(t('enrolled')) + '</span><button class="linkbtn small" id="pause" style="font-size:13px">' + esc(t('pause')) + '</button></div>' +
+        '<div class="row between" style="gap:12px"><span class="small muted">' + esc(t('paceCourse')) + '</span>' + segHtml('cpace', paceOpts(), paceOf(cid)) + '</div>';
     } else {
       html += '<button class="btn" id="enrol">' + esc(t('enrol')) + '</button>';
     }
-    units.forEach(function (u) {
-      if (u.id === openUnit[cid] && u.lessons.length) {
-        var doneN = u.lessons.filter(function (l) { return S.done[l.id]; }).length;
-        html += '<section class="card unit-open stack gap-4"><div class="row between" style="padding:0 8px 8px"><h2 class="serif" style="font-size:18px">' + esc(unitName(u)) + '</h2>' +
-          '<span class="small muted">' + doneN + ' / ' + u.lessons.length + '</span></div>';
-        u.lessons.forEach(function (l) {
-          var done = !!S.done[l.id], cur = L && L.id === l.id;
-          var badge = '<span class="badge' + (done ? ' done' : cur ? ' cur' : '') + '" aria-hidden="true">' + (done ? '✓' : l.n) + '</span>';
-          if (l.available) {
+    mods.forEach(function (m) {
+      var doneN = m.lessons.filter(function (l) { return S.done[l.id]; }).length;
+      if (m.id === openMod[cid] && m.lessons.length) {
+        html += '<section class="card unit-open stack gap-4"><div class="stack gap-4" style="padding:0 8px 8px"><div class="row between"><h2 class="serif" style="font-size:18px">' + esc(modName(m)) + '</h2>' +
+          '<span class="small muted">' + doneN + ' / ' + m.lessons.length + '</span></div>' + (m.desc ? '<span class="small muted">' + esc(m.desc) + '</span>' : '') + '</div>';
+        m.lessons.forEach(function (l) {
+          var st = lessonState(l), cur = L && L.id === l.id;
+          var badge = '<span class="badge' + (st === 'done' ? ' done' : cur ? ' cur' : '') + '" aria-hidden="true">' + (st === 'done' ? '✓' : l.n) + '</span>';
+          if (st === 'done' || st === 'open') {
             html += '<a class="lesson-row' + (cur ? ' cur' : '') + '" href="#/lesson/' + l.id + '">' + badge + '<span class="t">' + esc(l.title) + '</span></a>';
           } else {
-            html += '<div class="lesson-row off" aria-disabled="true">' + badge + '<span class="t">' + esc(l.title) + '</span><span class="tag">' + esc(t('inPreparation')) + '</span></div>';
+            var tag = st === 'prep' ? t('inPreparation') : st === 'cap' ? t('lockedCap') : t('lockedPrev');
+            html += '<div class="lesson-row off" aria-disabled="true" data-locked="' + st + '">' + badge + '<span class="t">' + esc(l.title) + '</span><span class="tag">' + (st === 'prep' ? '' : ICON.lock + ' ') + esc(tag) + '</span></div>';
           }
         });
         html += '</section>';
       } else {
-        var ready = u.lessons.some(function (l) { return l.available; });
-        html += '<button class="unit-row" data-unit="' + u.id + '" aria-expanded="false"><span class="n">' + esc(unitName(u)) + '</span>' +
-          '<span class="small muted">' + esc(u.lessons.length ? t('lessonsCount', { n: u.lessons.length }) + (ready ? '' : ' · ' + t('inPreparation')) : t('inPreparation')) + '</span></button>';
+        var status = m.status === 'open' ? t('lessonsCount', { n: m.lessons.length }) + (doneN ? ' · ✓ ' + doneN : '') :
+          (m.launch ? t('launchOn', { d: month(m.launch) }) : t('moduleTBD'));
+        var key = cid + '/' + m.id, on = !!S.notify[key];
+        html += '<div class="mod-row' + (m.status === 'open' ? '' : ' planned') + '"><button class="unit-row" data-mod="' + m.id + '" aria-expanded="false"><span class="stack" style="flex:1;min-width:0;text-align:left"><span class="n">' + esc(modName(m)) + '</span>' +
+          (m.desc ? '<span class="small muted mdesc">' + esc(m.desc) + '</span>' : '') + '</span><span class="small muted">' + esc(status) + '</span></button>' +
+          (m.status === 'planned' ? '<button class="notify sm' + (on ? ' on' : '') + '" data-notify="' + key + '" aria-pressed="' + on + '">' + ICON.bell + esc(on ? t('notifyOn') : t('notifyMe')) + '</button>' : '') + '</div>';
       }
     });
     html += '</div>';
@@ -270,24 +421,42 @@
     if (en) en.onclick = function () { enrol(cid); screenCourse(cid); };
     var pa = document.getElementById('pause');
     if (pa) pa.onclick = function () { S.enrolled = S.enrolled.filter(function (x) { return x !== cid; }); save(); toast(t('paused')); screenCourse(cid); };
-    view.querySelectorAll('[data-unit]').forEach(function (b) {
+    view.querySelectorAll('[data-cpace]').forEach(function (b) { b.onclick = function () { S.pace[cid] = b.dataset.cpace; save(); screenCourse(cid); }; });
+    view.querySelectorAll('[data-mod]').forEach(function (b) {
       b.addEventListener('click', function () {
-        var u = units.filter(function (x) { return x.id === b.dataset.unit; })[0];
-        if (u && u.lessons.length) { openUnit[cid] = u.id; screenCourse(cid); }
-        else toast(t('inPreparation'));
+        var m = mods.filter(function (x) { return x.id === b.dataset.mod; })[0];
+        if (m && m.lessons.length) { openMod[cid] = m.id; screenCourse(cid); }
+        else toast(m && m.launch ? t('launchOn', { d: month(m.launch) }) : t('moduleTBD'));
       });
     });
+    view.querySelectorAll('[data-locked]').forEach(function (r) {
+      r.onclick = function () { var s = r.dataset.locked; toast(s === 'prev' ? t('lockedToast') : s === 'cap' ? t('capToast') : t('inPreparation')); };
+    });
+    bindNotify(function () { screenCourse(cid); });
   }
 
   // ---------- lesson ----------
   function lessonBar(L, extra) {
-    var u = unitOf(L.id), c = meta(L.course);
+    var c = meta(L.course), m = lessonById(L.id).mod;
     return '<div class="bar"><div class="bar-inner"><a class="icon-btn" style="color:var(--ink)" href="#/course/' + L.course + '" aria-label="' + esc(t('back')) + '">' + ICON.back + '</a>' +
-      '<span class="bar-title">' + esc(c.title) + ' · ' + esc(unitName(u).split('　')[0]) + ' · ' + L.n + ' / ' + u.lessons.length + '</span>' + (extra || '<span style="width:44px"></span>') + '</div>' +
+      '<span class="bar-title">' + esc(c.title) + ' · ' + esc(t('moduleN', { num: m.num })) + ' · ' + L.n + ' / ' + m.lessons.length + '</span>' + (extra || '<span style="width:44px"></span>') + '</div>' +
       '<div class="progress"><div id="readProg" style="width:0%"></div></div></div>';
   }
+  // a locked lesson cannot be opened, even from a saved link
+  function guard(id) {
+    var l = lessonById(id);
+    if (!l) { notFound(); return false; }
+    var st = lessonState(l);
+    if (st === 'done' || st === 'open') return true;
+    toast(st === 'prev' ? t('lockedToast') : st === 'cap' ? t('capToast') : t('inPreparation'));
+    location.hash = '#/course/' + l.course;
+    return false;
+  }
   function screenLesson(id) {
+    if (!guard(id)) return;
     getLesson(id).then(function (L) {
+      L.termIds.forEach(function (g) { if (!S.met[g]) S.met[g] = today(); });
+      S.last = today(); save();
       var tools = '<div class="row" style="gap:2px"><button class="a-btn" id="smaller" aria-label="' + esc(t('smaller')) + '" style="font-size:14px">A−</button>' +
         '<button class="a-btn" id="larger" aria-label="' + esc(t('larger')) + '" style="font-size:18px">A+</button>' +
         '<button class="pill" id="script" aria-label="' + esc(t('switchScript')) + '">' + (S.script === 'hans' ? '简｜繁' : '繁｜简') + '</button></div>';
@@ -339,7 +508,27 @@
     for (var j = n - 1; j > 0; j--) { seed = (seed * 9301 + 49297) % 233280; var k = Math.floor(seed / 233280 * (j + 1)); var tmp = a[j]; a[j] = a[k]; a[k] = tmp; }
     return a;
   }
+  function doneScreen(L, score, n) {
+    var c = meta(L.course), m = lessonById(L.id).mod, html = '';
+    var next = nextLesson(L.course), nst = next ? lessonState(next) : null;
+    if (moduleComplete(m)) {
+      var mods = D.courses[L.course].modules, i = mods.indexOf(m), nm = mods[i + 1];
+      var nline = !nm ? '' : nm.status === 'open' ? t('nextModuleOpen', { t: nm.title }) : nm.launch ? t('nextModuleOn', { t: nm.title, d: month(nm.launch) }) : t('nextModuleTBD', { t: nm.title });
+      html += '<div class="stamp" aria-hidden="true">' + esc(c.seal || '道') + '</div><h1 class="serif" style="font-size:24px">' + esc(t('moduleDone', { num: m.num })) + '</h1>' +
+        '<p class="serif" style="font-size:17px;font-weight:600">' + esc(m.title) + '</p>' +
+        '<p class="lede">' + esc(m.summary || m.desc) + '</p>' + (nline ? '<p class="small muted">' + esc(nline) + '</p>' : '');
+    } else {
+      html += '<div class="done-seal" aria-hidden="true">' + esc(c.seal || '道') + '</div><h1 class="serif" style="font-size:24px">' + esc(t('lessonDone', { n: L.n })) + '</h1>';
+    }
+    html += '<p style="font-size:16px;color:var(--ink-2)">' + esc(t('score', { s: score, t: n })) + '</p>' +
+      '<p class="quote" style="margin-top:8px">' + esc(t('closingQuote')) + '<br><span class="small muted" style="font-family:var(--sans)">' + esc(t('closingSrc')) + '</span></p>';
+    if (next && nst === 'open') html += '<a class="btn" href="#/lesson/' + next.id + '" style="margin-top:24px">' + esc(t('oneMore')) + '</a><a class="btn ghost" href="#/today">' + esc(t('backToday')) + '</a>';
+    else html += (next && nst === 'cap' ? '<p class="small muted" style="margin-top:16px">' + ICON.lock + ' ' + esc(t('capReachedSub')) + '</p>' : '') + '<a class="btn" href="#/today" style="margin-top:24px">' + esc(t('backToday')) + '</a>';
+    html += '<button class="btn ghost" id="retry">' + esc(t('retry')) + '</button>';
+    return html;
+  }
   function screenQuiz(id) {
+    if (!guard(id)) return;
     getLesson(id).then(function (L) {
       var st = { qi: 0, picked: null, score: 0, done: false, seed: Date.now() % 233280 };
       function draw() {
@@ -349,11 +538,7 @@
           '<div class="qbars" style="grid-template-columns:repeat(' + n + ',minmax(0,1fr));padding:0 12px 10px">' +
           Q.map(function (_, i) { return '<span class="' + (st.done || i < st.qi || (i === st.qi && st.picked !== null) ? 'on' : '') + '"></span>'; }).join('') + '</div></div>';
         if (st.done) {
-          setView(head + '<div class="stack gap-16" style="align-items:center;text-align:center;padding:40px 8px 0">' +
-            '<div class="done-seal" aria-hidden="true">' + esc(meta(L.course).seal || '道') + '</div><h1 class="serif" style="font-size:24px">' + esc(t('lessonDone', { n: L.n })) + '</h1>' +
-            '<p style="font-size:16px;color:var(--ink-2)">' + esc(t('score', { s: st.score, t: n })) + '</p>' +
-            '<p class="quote" style="margin-top:8px">' + esc(t('closingQuote')) + '<br><span class="small muted" style="font-family:var(--sans)">' + esc(t('closingSrc')) + '</span></p>' +
-            '<a class="btn" href="#/today" style="margin-top:24px">' + esc(t('backToday')) + '</a><button class="btn ghost" id="retry">' + esc(t('retry')) + '</button></div>', null);
+          setView(head + '<div class="stack gap-16" style="align-items:center;text-align:center;padding:40px 8px 0">' + doneScreen(L, st.score, n) + '</div>', null);
           document.getElementById('retry').onclick = function () { st = { qi: 0, picked: null, score: 0, done: false, seed: (st.seed + 7) % 233280 }; draw(); };
           return;
         }
@@ -379,11 +564,11 @@
     }).catch(notFound);
   }
   function finishLesson(L, score) {
-    var first = !S.done[L.id];
-    S.done[L.id] = { score: score, of: L.quiz.length, date: today() };
+    var prev = S.done[L.id];
+    S.done[L.id] = { score: score, of: L.quiz.length, date: today(), first: prev ? prev.first : today() };
     enrol(L.course);
-    if (first) L.termIds.forEach(function (gid) { if (!S.cards[gid]) S.cards[gid] = { due: today(), ivl: 0 }; });
-    save();
+    if (!prev) L.termIds.forEach(function (gid) { if (!S.cards[gid]) S.cards[gid] = { due: today(), ivl: 0 }; S.met[gid] = S.met[gid] || today(); });
+    markDay(); save();
   }
 
   // ---------- review ----------
@@ -412,30 +597,40 @@
       setView(html, 'review');
       document.getElementById('flip').onclick = function () { st.back = !st.back; draw(); };
       view.querySelectorAll('.rate').forEach(function (b) {
-        b.onclick = function () { var iv = +b.dataset.iv; S.cards[g.id] = { due: addDays(iv), ivl: iv }; save(); st.i++; st.back = false; draw(); };
+        b.onclick = function () {
+          var iv = +b.dataset.iv; S.cards[g.id] = { due: addDays(iv), ivl: iv };
+          if (S.rev.d !== today()) S.rev = { d: today(), n: 0 };
+          S.rev.n++; markDay(); save(); st.i++; st.back = false; draw();
+        };
       });
     }
     draw();
   }
 
-  // ---------- glossary ----------
+  // ---------- glossary: only terms the user has met in a lesson ----------
   function screenGlossary(focusId) {
-    var html = '<div class="stack gap-12"><h1 class="page-title">' + esc(t('glossary')) + '</h1>' +
-      '<label class="search"><span class="muted" aria-hidden="true">' + ICON.glossary + '</span><input id="q" type="search" placeholder="' + esc(t('searchPlaceholder')) + '" aria-label="' + esc(t('searchPlaceholder')) + '" autocomplete="off"></label>' +
+    var known = D.glossary.filter(function (g) { return S.met[g.id] || g.id === focusId; });
+    var html = '<div class="stack gap-12"><h1 class="page-title">' + esc(t('glossary')) + '</h1>';
+    if (!known.length) {
+      setView(html + '<div class="empty stack gap-8"><h2 class="serif" style="font-size:20px">' + esc(t('glossaryEmpty')) + '</h2><p class="lede">' + esc(t('glossaryEmptySub')) + '</p></div></div>', 'glossary');
+      return;
+    }
+    html += '<label class="search"><span class="muted" aria-hidden="true">' + ICON.glossary + '</span><input id="q" type="search" placeholder="' + esc(t('searchPlaceholder')) + '" aria-label="' + esc(t('searchPlaceholder')) + '" autocomplete="off"></label>' +
       '<span class="small muted" id="gcount"></span><div id="glist"></div></div>';
     setView(html, 'glossary');
     var lessonTitle = {}; allLessons().forEach(function (l) { lessonTitle[l.id] = l; });
     function list(q) {
       q = (q || '').trim().toLowerCase();
-      var items = D.glossary.filter(function (g) {
+      var items = known.filter(function (g) {
         return !q || g.term.indexOf(q) >= 0 || g.latin.toLowerCase().indexOf(q) >= 0 || (g.aliases || []).some(function (a) { return a.indexOf(q) >= 0; });
       });
       document.getElementById('gcount').textContent = t('termsCount', { n: items.length });
       document.getElementById('glist').innerHTML = items.length ? items.map(function (g) {
         var l = lessonTitle[g.lesson], from = '';
         if (l) {
-          var label = meta(l.course).title + '　' + t('lessonN', { n: l.n }) + (l.available ? '　' + l.title : '');
-          from = l.available ? '<a class="ref" href="#/lesson/' + l.id + '">' + esc(t('fromLesson', { t: label })) + '</a>' : '<span class="ref">' + esc(t('fromLesson', { t: label })) + '</span>';
+          var label = meta(l.course).title + '　' + t('lessonN', { n: l.n }) + '　' + l.title;
+          var st = lessonState(l);
+          from = (st === 'done' || st === 'open') ? '<a class="ref" href="#/lesson/' + l.id + '">' + esc(t('fromLesson', { t: label })) + '</a>' : '<span class="ref">' + esc(t('fromLesson', { t: label })) + '</span>';
         }
         return '<div class="gitem stack gap-4' + (g.id === focusId ? ' hl' : '') + '" id="g-' + g.id + '"><div class="row" style="gap:10px;align-items:baseline;flex-wrap:wrap"><span class="term">' + esc(g.term) + '</span><span class="latin">' + esc(g.latin) + '</span></div>' +
           '<p class="def">' + esc(g.def) + '</p><div class="row" style="gap:12px;flex-wrap:wrap"><span class="small muted">' + esc(g.ref) + '</span>' + from + '</div></div>';
@@ -458,17 +653,30 @@
       '<span id="fsv" class="muted" style="min-width:36px;text-align:center">' + S.fs + '</span><button class="a-btn" id="larger" aria-label="' + esc(t('larger')) + '" style="font-size:22px">A</button></div></div>' +
       '<div class="setrow" style="padding:12px 0"><p class="serif" style="font-size:var(--fs);line-height:1.8">' + esc(t('closingQuote')) + '</p></div></div></section>' +
       '<section class="stack gap-8"><span class="small muted">' + esc(t('study')) + '</span><div class="group">' +
-      '<div class="setrow"><span style="font-size:16px">' + esc(t('pace')) + '</span><span class="muted">' + esc(t('paceDaily')) + '</span></div>' +
-      '<div class="setrow"><button class="linkbtn" id="reset">' + esc(t('resetProgress')) + '</button></div></div></section>' +
+      '<div class="setrow stack-mob"><span style="font-size:16px">' + esc(t('paceDefault')) + '</span>' + segHtml('dpace', paceOpts(), S.paceDefault) + '</div>' +
+      '<div class="setrow"><span style="font-size:16px">' + esc(t('dailyCap')) + '</span>' + segHtml('cap', [[1, '1'], [2, '2'], [3, '3']], S.cap) + '</div>' +
+      '<div class="setrow"><span style="font-size:16px">' + esc(t('reviewCap')) + '</span>' + segHtml('rcap', [[10, '10'], [20, '20'], [30, '30']], S.revCap) + '</div></div></section>' +
+      '<section class="stack gap-8"><span class="small muted">' + esc(t('remind')) + '</span><div class="group">' +
+      '<label class="setrow"><span style="font-size:16px">' + esc(t('remindTime')) + '</span><input id="rt" type="time" value="' + esc(S.remind) + '" class="time"></label>' +
+      '<div class="setrow stack gap-4" style="align-items:flex-start;padding:12px 0"><button class="linkbtn row" id="ics" style="gap:6px">' + ICON.cal + esc(t('addCalendar')) + '</button>' +
+      '<span class="small muted">' + esc(t('addCalendarSub')) + '</span></div></div></section>' +
+      '<section class="stack gap-8"><div class="group"><div class="setrow"><button class="linkbtn" id="reset">' + esc(t('resetProgress')) + '</button></div></div></section>' +
       '<section class="stack gap-8"><span class="small muted">' + esc(t('about')) + '</span><div class="card stack gap-8" style="padding:16px">' +
       '<span class="serif" style="font-weight:700;font-size:17px">' + esc(t('aboutTitle')) + '</span><p class="serif" style="font-size:15px;line-height:1.75;color:var(--ink-2)">' + esc(t('aboutText')) + '</p>' +
       '<span class="small muted">' + esc(t('aboutNote')) + '</span></div></section></div>';
     setView(html, null);
     view.querySelectorAll('[data-script]').forEach(function (b) { b.onclick = function () { switchScript(b.dataset.script); }; });
+    view.querySelectorAll('[data-dpace]').forEach(function (b) { b.onclick = function () { S.paceDefault = b.dataset.dpace; save(); screenSettings(); }; });
+    view.querySelectorAll('[data-cap]').forEach(function (b) { b.onclick = function () { S.cap = +b.dataset.cap; save(); screenSettings(); }; });
+    view.querySelectorAll('[data-rcap]').forEach(function (b) { b.onclick = function () { S.revCap = +b.dataset.rcap; save(); screenSettings(); }; });
+    document.getElementById('rt').onchange = function (e) { S.remind = e.target.value || S.remind; save(); };
+    document.getElementById('ics').onclick = downloadICS;
     document.getElementById('smaller').onclick = function () { S.fs = Math.max(15, S.fs - 2); save(); applyFont(); document.getElementById('fsv').textContent = S.fs; };
     document.getElementById('larger').onclick = function () { S.fs = Math.min(25, S.fs + 2); save(); applyFont(); document.getElementById('fsv').textContent = S.fs; };
     document.getElementById('reset').onclick = function () {
-      if (window.confirm(t('resetConfirm'))) { S.done = {}; S.cards = {}; S.enrolled = null; save(); initEnrolled(); location.hash = '#/today'; }
+      if (window.confirm(t('resetConfirm'))) {
+        S.done = {}; S.cards = {}; S.met = {}; S.days = {}; S.rev = { d: '', n: 0 }; S.enrolled = null; save(); initEnrolled(); location.hash = '#/today';
+      }
     };
   }
 
@@ -483,6 +691,9 @@
   // ---------- router ----------
   function route() {
     var h = (location.hash || '#/today').slice(2).split('/');
+    if (!S.onboarded) return screenStart();
+    // welcome back after 7+ days away (once a day), only for someone who has started
+    if ((h[0] === 'today' || h[0] === '') && S.last && daysSince(S.last) >= 7 && S.recapOn !== today() && Object.keys(S.done).length) return screenRecap();
     switch (h[0]) {
       case 'course': return h[1] ? screenCourse(h[1]) : screenCatalogue();
       case 'lesson': return screenLesson(h[1]);

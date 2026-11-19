@@ -181,3 +181,20 @@ h1, h2, h3, p { margin: 0; }
 .mini-course:last-child { border-bottom: 0; }
 .mini-course .mc-title { font-family: var(--serif); font-weight: 600; font-size: 16px; }
 .mini-course.planned .mc-title { color: var(--ink-2); }
+
+/* modules, locks, pace, reminders (2026-11-19) */
+.btn.ghost-line { background: transparent; color: var(--accent); border: 1px solid var(--accent); gap: 8px; }
+.btn.ghost-line:hover { background: var(--accent-soft); color: var(--accent-dark); }
+.time { font: inherit; font-size: 16px; border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; background: var(--card); color: var(--ink); }
+.banner { border-color: var(--ok); background: var(--ok-soft); }
+.banner a { font-family: var(--serif); font-size: 16px; text-decoration: none; }
+.stamp { width: 96px; height: 96px; border-radius: 14px; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-family: var(--serif); font-size: 52px; font-weight: 700; transform: rotate(-6deg); box-shadow: 0 0 0 4px var(--paper), 0 0 0 6px var(--accent); }
+.mod-row { border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+.mod-row .unit-row { border-bottom: 0; align-items: flex-start; }
+.mod-row.planned .n { color: var(--ink-2); }
+.mod-row .mdesc { font-family: var(--serif); line-height: 1.6; margin-top: 2px; }
+.notify.sm { margin: 0 0 4px 4px; min-height: 30px; font-size: 12px; padding: 0 10px; }
+.lesson-row .tag { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.lesson-row.off { cursor: pointer; }
+.seg button { padding: 0 10px; white-space: nowrap; }
+@media (max-width: 400px) { .setrow.stack-mob { flex-direction: column; align-items: flex-start; padding: 10px 0; } }
