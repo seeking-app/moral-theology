@@ -4,11 +4,11 @@
 
   // ---------- storage ----------
   // done[id] = {score, of, date, first}; cards[gid] = {due, ivl}; met[gid] = date; days[ymd] = 1;
-  // pace[cid] = 'daily' | '3w' | 'weekdays'; notify[cid] or notify[cid + '/' + mid] = date followed
+  // notify[cid] or notify[cid + '/' + mid] = date followed
   var KEY = 'xundao.v1';
   var DEFAULTS = {
     script: 'hant', fs: 17, done: {}, cards: {}, enrolled: null, notify: {},
-    met: null, days: {}, pace: {}, paceDefault: 'daily', cap: 2, revCap: 20, rev: { d: '', n: 0 },
+    met: null, days: {}, cap: 2, revCap: 20, rev: { d: '', n: 0 },
     remind: '07:30', last: '', recapOn: '', onboarded: false
   };
   function load() {
@@ -23,6 +23,7 @@
   if (!S.met) { S.met = {}; Object.keys(S.cards).forEach(function (g) { S.met[g] = S.cards[g].due || ''; }); }
   Object.keys(S.done).forEach(function (id) { if (!S.done[id].first) S.done[id].first = S.done[id].date || ''; });
   if (Object.keys(S.done).length) S.onboarded = true;
+  delete S.pace; delete S.paceDefault;
 
   // ---------- data ----------
   // D.catalogue: every course (published + planned), display order
@@ -109,13 +110,6 @@
     if (newToday(l.course) >= S.cap) return 'cap';
     return 'open';
   }
-  function paceOf(cid) { return S.pace[cid] || S.paceDefault; }
-  function studyDay(cid) {
-    var w = new Date().getDay(), p = paceOf(cid);
-    if (p === '3w') return w === 1 || w === 3 || w === 5;
-    if (p === 'weekdays') return w >= 1 && w <= 5;
-    return true;
-  }
   function isEnrolled(cid) { return S.enrolled.indexOf(cid) >= 0; }
   function enrol(cid) { if (!isEnrolled(cid)) { S.enrolled.push(cid); save(); } }
   function allDue() { var d = today(); return Object.keys(S.cards).filter(function (id) { return D.gById[id] && S.cards[id].due <= d; }); }
@@ -178,7 +172,6 @@
       return '<button data-' + name + '="' + o[0] + '" aria-pressed="' + (String(o[0]) === String(cur)) + '">' + esc(o[1]) + '</button>';
     }).join('') + '</div>';
   }
-  function paceOpts() { return [['daily', t('paceDaily')], ['3w', t('pace3w')], ['weekdays', t('paceWeekdays')]]; }
 
   // ---------- calendar reminder (.ics): works offline, everywhere, no push service ----------
   function downloadICS() {
@@ -189,7 +182,7 @@
       return utc ? x.getUTCFullYear() + p(x.getUTCMonth() + 1) + p(x.getUTCDate()) + 'T' + p(x.getUTCHours()) + p(x.getUTCMinutes()) + '00Z'
         : x.getFullYear() + p(x.getMonth() + 1) + p(x.getDate()) + 'T' + p(x.getHours()) + p(x.getMinutes()) + '00';
     }
-    var rule = { daily: 'FREQ=DAILY', '3w': 'FREQ=WEEKLY;BYDAY=MO,WE,FR', weekdays: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR' }[S.paceDefault] || 'FREQ=DAILY';
+    var rule = 'FREQ=DAILY';
     var url = location.href.split('#')[0] + '#/today';
     var ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//xundao//reminder//ZH', 'CALSCALE:GREGORIAN', 'BEGIN:VEVENT',
       'UID:xundao-daily-' + Date.now() + '@xundao', 'DTSTAMP:' + stamp(new Date(), true), 'DTSTART:' + stamp(d), 'DURATION:PT10M',
@@ -207,13 +200,11 @@
     var anchors = [['07:00', t('anchorMorning')], ['12:30', t('anchorNoon')], ['21:00', t('anchorEvening')]];
     var html = '<div class="stack gap-20" style="padding-top:24px"><div class="brand"><div class="seal" aria-hidden="true">道</div><span class="brand-name">' + esc(t('appName')) + '</span></div>' +
       '<h1 class="serif" style="font-size:26px;font-weight:700">' + esc(t('obTitle')) + '</h1><p class="lede">' + esc(t('obText')) + '</p>' +
-      '<section class="stack gap-8"><span class="label">' + esc(t('pace')) + '</span>' + segHtml('pace', paceOpts(), S.paceDefault) + '</section>' +
       '<section class="stack gap-8"><span class="label">' + esc(t('obWhen')) + '</span>' + segHtml('anchor', anchors, S.remind) +
       '<label class="setrow" style="border:0;min-height:44px"><span>' + esc(t('remindTime')) + '</span><input id="rt" type="time" value="' + esc(S.remind) + '" class="time"></label></section>' +
       '<button class="btn ghost-line" id="ics">' + ICON.cal + esc(t('obCalendar')) + '</button>' +
       '<button class="btn" id="go">' + esc(t('obStart')) + '</button></div>';
     setView(html, null);
-    view.querySelectorAll('[data-pace]').forEach(function (b) { b.onclick = function () { S.paceDefault = b.dataset.pace; save(); screenStart(); }; });
     view.querySelectorAll('[data-anchor]').forEach(function (b) { b.onclick = function () { S.remind = b.dataset.anchor; save(); screenStart(); }; });
     document.getElementById('rt').onchange = function (e) { S.remind = e.target.value || S.remind; save(); };
     document.getElementById('ics').onclick = downloadICS;
@@ -261,8 +252,7 @@
       '<header class="top"><div class="brand"><div class="seal" aria-hidden="true">道</div><span class="brand-name">' + esc(t('appName')) + '</span></div>' +
       '<a class="icon-btn" href="#/settings" aria-label="' + esc(t('settings')) + '">' + ICON.gear + '</a></header>' +
       '<div class="stack gap-4"><span class="small muted">' + esc(t('dateFmt', { m: d.getMonth() + 1, d: d.getDate(), w: D.ui.weekdays[d.getDay()] })) +
-      (dm ? '　·　' + esc(t('daysThisMonth', { n: dm })) : '') + '</span>' +
-      '<h1 class="serif" style="font-weight:600;font-size:26px">' + esc(t('greeting')) + '</h1></div>';
+      (dm ? '　·　' + esc(t('daysThisMonth', { n: dm })) : '') + '</span></div>';
     html += newContentBanner();
     var active = D.catalogue.filter(function (c) { return D.courses[c.id] && isEnrolled(c.id); });
     if (!active.length) {
@@ -277,7 +267,6 @@
     view.querySelectorAll('[data-key]').forEach(function (el) {
       getLesson(el.dataset.key).then(function (x) { el.textContent = x.keypoint; }).catch(function () {});
     });
-    view.querySelectorAll('[data-anyway]').forEach(function (b) { b.onclick = function () { location.hash = '#/lesson/' + b.dataset.anyway; }; });
   }
   function moduleDots(m, curId) {
     var n = m.lessons.length, doneN = m.lessons.filter(function (l) { return S.done[l.id]; }).length;
@@ -307,10 +296,6 @@
     }
     var body = '<p class="lede" data-key="' + L.id + '"></p>' +
       '<div class="row gap-12 small muted"><span>' + esc(t('minutes', { m: L.minutes })) + '</span><span aria-hidden="true">·</span><span>' + esc(t('quizN', { n: 3 })) + '</span></div>';
-    if (!studyDay(c.id) && newToday(c.id) === 0) {
-      return '<section class="card stack gap-12">' + head + '<h2 class="serif" style="font-size:18px">' + esc(t('restDay')) + '</h2><p class="lede">' + esc(t('restDaySub')) + '</p>' +
-        '<span class="small muted">' + esc(t('nextUp', { t: L.title })) + '</span><button class="btn ghost-line" data-anyway="' + L.id + '">' + esc(t('studyAnyway')) + '</button>' + moduleDots(m, L.id) + '</section>';
-    }
     return '<section class="card stack gap-12" aria-label="' + esc(c.title) + '">' + head + info + body +
       '<a class="btn" href="#/lesson/' + L.id + '">' + esc(t('startReading')) + '</a>' + moduleDots(m, L.id) + '</section>';
   }
@@ -385,8 +370,7 @@
       '<span class="small muted" style="font-size:14px">' + esc(t('courseSub', { modules: mods.length, lessons: total })) + '</span></div></div>' +
       '<p class="lede">' + esc(c.desc) + '</p>';
     if (isEnrolled(cid)) {
-      html += '<div class="row between"><span class="small" style="color:var(--ok);font-weight:500">✓ ' + esc(t('enrolled')) + '</span><button class="linkbtn small" id="pause" style="font-size:13px">' + esc(t('pause')) + '</button></div>' +
-        '<div class="row between" style="gap:12px"><span class="small muted">' + esc(t('paceCourse')) + '</span>' + segHtml('cpace', paceOpts(), paceOf(cid)) + '</div>';
+      html += '<div class="row between"><span class="small" style="color:var(--ok);font-weight:500">✓ ' + esc(t('enrolled')) + '</span><button class="linkbtn small" id="pause" style="font-size:13px">' + esc(t('pause')) + '</button></div>';
     } else {
       html += '<button class="btn" id="enrol">' + esc(t('enrol')) + '</button>';
     }
@@ -421,7 +405,6 @@
     if (en) en.onclick = function () { enrol(cid); screenCourse(cid); };
     var pa = document.getElementById('pause');
     if (pa) pa.onclick = function () { S.enrolled = S.enrolled.filter(function (x) { return x !== cid; }); save(); toast(t('paused')); screenCourse(cid); };
-    view.querySelectorAll('[data-cpace]').forEach(function (b) { b.onclick = function () { S.pace[cid] = b.dataset.cpace; save(); screenCourse(cid); }; });
     view.querySelectorAll('[data-mod]').forEach(function (b) {
       b.addEventListener('click', function () {
         var m = mods.filter(function (x) { return x.id === b.dataset.mod; })[0];
@@ -470,9 +453,6 @@
         return '<div class="stack gap-4">' + (x.src ? '<span class="src">' + esc(x.src) + '</span>' : '') + '<p>' + esc(x.text) + '</p></div>';
       }).join('');
       var chips = L.terms.map(function (name, i) { return '<a class="chip" href="#/glossary/' + L.termIds[i] + '">' + esc(name) + '</a>'; }).join('');
-      var reflect = (L.reflect && L.reflect.length) ?
-        '<section class="reflect stack gap-8"><div class="row between" style="font-family:var(--sans)"><span class="label">' + esc(t('selfCheck')) + '</span><span class="small muted">' + esc(t('selfCheckNote')) + '</span></div>' +
-        '<ol>' + L.reflect.map(function (q) { return '<li>' + esc(q) + '</li>'; }).join('') + '</ol></section>' : '';
       var html = lessonBar(L, tools) +
         '<article class="article stack gap-20">' +
         '<div class="stack gap-8"><span class="eyebrow" style="font-family:var(--sans)">' + esc(t('lessonN', { n: L.n })) + ' · ' + esc(t('minutes', { m: L.minutes })) + '</span>' +
@@ -483,7 +463,6 @@
         '<section class="teaching stack gap-12"><span class="eyebrow" style="font-family:var(--sans)">' + esc(t('teaching')) + '</span>' + teach + '</section>' +
         '<section class="stack gap-8"><span class="label" style="font-family:var(--sans)">' + esc(t('keyTerms')) + '</span><div class="chips">' + chips + '</div></section>' +
         '<section class="meditate stack gap-4"><span class="label" style="font-family:var(--sans)">' + esc(t('meditation')) + '</span><p style="font-size:var(--fs)">' + esc(L.meditation) + '</p></section>' +
-        reflect +
         '<a class="btn" href="#/quiz/' + L.id + '" style="font-family:var(--sans)">' + esc(t('toQuiz')) + '</a></article>';
       setView(html, null);
       document.getElementById('smaller').onclick = function () { S.fs = Math.max(15, S.fs - 2); save(); applyFont(); };
@@ -653,7 +632,6 @@
       '<span id="fsv" class="muted" style="min-width:36px;text-align:center">' + S.fs + '</span><button class="a-btn" id="larger" aria-label="' + esc(t('larger')) + '" style="font-size:22px">A</button></div></div>' +
       '<div class="setrow" style="padding:12px 0"><p class="serif" style="font-size:var(--fs);line-height:1.8">' + esc(t('closingQuote')) + '</p></div></div></section>' +
       '<section class="stack gap-8"><span class="small muted">' + esc(t('study')) + '</span><div class="group">' +
-      '<div class="setrow stack-mob"><span style="font-size:16px">' + esc(t('paceDefault')) + '</span>' + segHtml('dpace', paceOpts(), S.paceDefault) + '</div>' +
       '<div class="setrow"><span style="font-size:16px">' + esc(t('dailyCap')) + '</span>' + segHtml('cap', [[1, '1'], [2, '2'], [3, '3']], S.cap) + '</div>' +
       '<div class="setrow"><span style="font-size:16px">' + esc(t('reviewCap')) + '</span>' + segHtml('rcap', [[10, '10'], [20, '20'], [30, '30']], S.revCap) + '</div></div></section>' +
       '<section class="stack gap-8"><span class="small muted">' + esc(t('remind')) + '</span><div class="group">' +
@@ -666,7 +644,6 @@
       '<span class="small muted">' + esc(t('aboutNote')) + '</span></div></section></div>';
     setView(html, null);
     view.querySelectorAll('[data-script]').forEach(function (b) { b.onclick = function () { switchScript(b.dataset.script); }; });
-    view.querySelectorAll('[data-dpace]').forEach(function (b) { b.onclick = function () { S.paceDefault = b.dataset.dpace; save(); screenSettings(); }; });
     view.querySelectorAll('[data-cap]').forEach(function (b) { b.onclick = function () { S.cap = +b.dataset.cap; save(); screenSettings(); }; });
     view.querySelectorAll('[data-rcap]').forEach(function (b) { b.onclick = function () { S.revCap = +b.dataset.rcap; save(); screenSettings(); }; });
     document.getElementById('rt').onchange = function (e) { S.remind = e.target.value || S.remind; save(); };
