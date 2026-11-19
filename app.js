@@ -6,9 +6,10 @@
   // done[id] = {score, of, date, first}; cards[gid] = {due, ivl}; met[gid] = date; days[ymd] = 1;
   // notify[cid] or notify[cid + '/' + mid] = date followed
   var KEY = 'xundao.v1';
+  var DAILY_CAP = 1; // one new lesson per course per day
   var DEFAULTS = {
     script: 'hant', fs: 17, done: {}, cards: {}, enrolled: null, notify: {},
-    met: null, days: {}, cap: 2, revCap: 20, rev: { d: '', n: 0 },
+    met: null, days: {}, revCap: 20, rev: { d: '', n: 0 },
     remind: '07:30', last: '', recapOn: '', onboarded: false
   };
   function load() {
@@ -23,11 +24,12 @@
   if (!S.met) { S.met = {}; Object.keys(S.cards).forEach(function (g) { S.met[g] = S.cards[g].due || ''; }); }
   Object.keys(S.done).forEach(function (id) { if (!S.done[id].first) S.done[id].first = S.done[id].date || ''; });
   if (Object.keys(S.done).length) S.onboarded = true;
-  delete S.pace; delete S.paceDefault;
+  delete S.pace; delete S.paceDefault; delete S.cap;
 
   // ---------- data ----------
   // D.catalogue: every course (published + planned), display order
-  // D.courses[id]: {id, title, modules:[{id, num, title, desc, summary, launch, est, status, lessons:[...]}]}
+  // D.courses[id]: {id, title, modules:[{id, num, title, desc, summary, launch, est, status, part, lessons:[...]}],
+  //                 parts (long courses only): [{id, num, title, desc, summary, launch, modules:[ids]} → p.mods]}
   // D.lessonCourse[lessonId] = courseId
   var D = { ui: null, catalogue: [], courses: {}, lessonCourse: {}, glossary: null, gById: {}, lessons: {} };
   function getJSON(url) {
@@ -49,6 +51,11 @@
         list.forEach(function (course) {
           D.courses[course.id] = course;
           course.modules.forEach(function (m) { m.lessons.forEach(function (l) { l.course = course.id; l.mod = m; D.lessonCourse[l.id] = course.id; }); });
+          course.parts = course.parts || [];
+          course.parts.forEach(function (p) {
+            p.mods = course.modules.filter(function (m) { return p.modules.indexOf(m.id) >= 0; });
+            p.mods.forEach(function (m) { m.part = p; });
+          });
         });
         initEnrolled();
       });
@@ -107,7 +114,7 @@
     if (S.done[l.id]) return 'done';
     var avail = available(l.course);
     for (var i = 0; i < avail.length && avail[i].id !== l.id; i++) if (!S.done[avail[i].id]) return 'prev';
-    if (newToday(l.course) >= S.cap) return 'cap';
+    if (newToday(l.course) >= DAILY_CAP) return 'cap';
     return 'open';
   }
   function isEnrolled(cid) { return S.enrolled.indexOf(cid) >= 0; }
@@ -121,6 +128,30 @@
   function markDay() { S.days[today()] = 1; S.last = today(); }
   function daysThisMonth() { var p = today().slice(0, 7); return Object.keys(S.days).filter(function (d) { return d.slice(0, 7) === p; }).length; }
   function modName(m) { return t('moduleN', { num: m.num }) + '　' + m.title; }
+  // ---------- parts (long courses: course → part → unit → lesson) ----------
+  function partLessons(p) { var a = []; p.mods.forEach(function (m) { a = a.concat(m.lessons); }); return a; }
+  function partEst(p) { return p.mods.reduce(function (a, m) { return a + m.est; }, 0); }
+  function partOpen(p) { return p.mods.some(function (m) { return m.status === 'open'; }); }
+  function partComplete(p) { return p.mods.every(moduleComplete); }
+  function partLaunch(p) { return p.launch || p.mods.map(function (m) { return m.launch; }).filter(Boolean).sort()[0] || ''; }
+  function partById(cid, pid) { var c = D.courses[cid]; return c ? c.parts.filter(function (p) { return p.id === pid; })[0] : null; }
+  function partTerms(p) {
+    var seen = {}, out = [];
+    partLessons(p).forEach(function (l) { (l.terms || []).forEach(function (g) { if (!seen[g] && D.gById[g] && S.cards[g]) { seen[g] = 1; out.push(g); } }); });
+    return out;
+  }
+  function partHeader(cid, p) {
+    var ls = partLessons(p), doneN = ls.filter(function (l) { return S.done[l.id]; }).length, est = partEst(p);
+    var open = partOpen(p), done = partComplete(p), key = cid + '/' + p.id, on = !!S.notify[key], ln = partLaunch(p);
+    var status = done ? '✓ ' + t('partDoneShort') : open ? t('progressOf', { d: doneN, a: est }) : (ln ? t('launchOn', { d: month(ln) }) : t('moduleTBD'));
+    return '<section class="part-head stack gap-8' + (open ? '' : ' planned') + '">' +
+      '<div class="row between" style="gap:12px;align-items:flex-end"><div class="stack gap-4" style="min-width:0"><span class="eyebrow">' + esc(t('partN', { num: p.num })) + '</span>' +
+      '<h2 class="serif" style="font-size:20px">' + esc(p.title) + '</h2></div><span class="small muted" style="white-space:nowrap">' + esc(status) + '</span></div>' +
+      (p.desc ? '<p class="small muted" style="line-height:1.6">' + esc(p.desc) + '</p>' : '') +
+      (open ? '<div class="meter" role="img" aria-label="' + doneN + ' / ' + est + '"><div style="width:' + (est ? Math.round(doneN / est * 100) : 0) + '%"></div></div>' : '') +
+      (open ? '' : '<button class="notify sm' + (on ? ' on' : '') + '" data-notify="' + key + '" aria-pressed="' + on + '">' + ICON.bell + esc(on ? t('notifyOn') : t('notifyMe')) + '</button>') +
+      (done && partTerms(p).length ? '<a class="linkbtn small" href="#/review/' + cid + '/' + p.id + '">' + esc(t('partReview')) + '</a>' : '') + '</section>';
+  }
   function seal(c, cls) { return '<span class="seal ' + (cls || '') + '" aria-hidden="true">' + esc(c.seal || '道') + '</span>'; }
   // the module after the last one the user can reach; used when all published lessons are read
   function upcomingModule(cid) {
@@ -240,6 +271,8 @@
       if (p.length === 2 && D.courses[p[0]]) {
         var m = D.courses[p[0]].modules.filter(function (x) { return x.id === p[1]; })[0];
         if (m && m.status === 'open') { items.push('<a href="#/course/' + c.id + '">' + esc(c.title) + ' · ' + esc(modName(m)) + '</a>'); delete S.notify[k]; }
+        var pt = partById(p[0], p[1]);
+        if (pt && partOpen(pt)) { items.push('<a href="#/course/' + c.id + '">' + esc(c.title) + ' · ' + esc(t('partN', { num: pt.num }) + '　' + pt.title) + '</a>'); delete S.notify[k]; }
       }
     });
     if (items.length) save();
@@ -357,7 +390,7 @@
   function screenCourse(cid) {
     var course = D.courses[cid], c = meta(cid);
     if (!course) return screenCatalogue();
-    var L = nextLesson(cid), mods = course.modules;
+    var L = nextLesson(cid), mods = course.modules, parts = course.parts;
     if (!openMod[cid]) {
       var first = mods.filter(function (m) { return m.status === 'open'; })[0];
       openMod[cid] = (L ? L.mod : (first || mods[0])).id;
@@ -367,14 +400,14 @@
       '<span class="bar-title">' + esc(t('tabCourse')) + '</span></div></div>' +
       '<div class="stack gap-16" style="padding-top:20px"><div class="row" style="gap:14px;align-items:flex-start">' + seal(c, 'lg') +
       '<div class="stack gap-4"><h1 class="page-title">' + esc(course.title) + '</h1>' +
-      '<span class="small muted" style="font-size:14px">' + esc(t('courseSub', { modules: mods.length, lessons: total })) + '</span></div></div>' +
+      '<span class="small muted" style="font-size:14px">' + esc(parts.length ? t('courseSubParts', { parts: parts.length, modules: mods.length, lessons: total }) : t('courseSub', { modules: mods.length, lessons: total })) + '</span></div></div>' +
       '<p class="lede">' + esc(c.desc) + '</p>';
     if (isEnrolled(cid)) {
       html += '<div class="row between"><span class="small" style="color:var(--ok);font-weight:500">✓ ' + esc(t('enrolled')) + '</span><button class="linkbtn small" id="pause" style="font-size:13px">' + esc(t('pause')) + '</button></div>';
     } else {
       html += '<button class="btn" id="enrol">' + esc(t('enrol')) + '</button>';
     }
-    mods.forEach(function (m) {
+    function renderMod(m) {
       var doneN = m.lessons.filter(function (l) { return S.done[l.id]; }).length;
       if (m.id === openMod[cid] && m.lessons.length) {
         html += '<section class="card unit-open stack gap-4"><div class="stack gap-4" style="padding:0 8px 8px"><div class="row between"><h2 class="serif" style="font-size:18px">' + esc(modName(m)) + '</h2>' +
@@ -396,9 +429,11 @@
         var key = cid + '/' + m.id, on = !!S.notify[key];
         html += '<div class="mod-row' + (m.status === 'open' ? '' : ' planned') + '"><button class="unit-row" data-mod="' + m.id + '" aria-expanded="false"><span class="stack" style="flex:1;min-width:0;text-align:left"><span class="n">' + esc(modName(m)) + '</span>' +
           (m.desc ? '<span class="small muted mdesc">' + esc(m.desc) + '</span>' : '') + '</span><span class="small muted">' + esc(status) + '</span></button>' +
-          (m.status === 'planned' ? '<button class="notify sm' + (on ? ' on' : '') + '" data-notify="' + key + '" aria-pressed="' + on + '">' + ICON.bell + esc(on ? t('notifyOn') : t('notifyMe')) + '</button>' : '') + '</div>';
+          (m.status === 'planned' && !m.part ? '<button class="notify sm' + (on ? ' on' : '') + '" data-notify="' + key + '" aria-pressed="' + on + '">' + ICON.bell + esc(on ? t('notifyOn') : t('notifyMe')) + '</button>' : '') + '</div>';
       }
-    });
+    }
+    if (parts.length) parts.forEach(function (p) { html += partHeader(cid, p); p.mods.forEach(renderMod); });
+    else mods.forEach(renderMod);
     html += '</div>';
     setView(html, 'course');
     var en = document.getElementById('enrol');
@@ -490,7 +525,15 @@
   function doneScreen(L, score, n) {
     var c = meta(L.course), m = lessonById(L.id).mod, html = '';
     var next = nextLesson(L.course), nst = next ? lessonState(next) : null;
-    if (moduleComplete(m)) {
+    var P = m.part;
+    if (P && moduleComplete(m) && partComplete(P)) {
+      var ps = D.courses[L.course].parts, np = ps[ps.indexOf(P) + 1], pl = np ? partLaunch(np) : '';
+      var pline = !np ? '' : partOpen(np) ? t('nextPartOpen', { t: np.title }) : pl ? t('nextPartOn', { t: np.title, d: month(pl) }) : t('nextPartTBD', { t: np.title });
+      html += '<div class="stamp part" aria-hidden="true">' + esc(c.seal || '道') + '</div><h1 class="serif" style="font-size:24px">' + esc(t('partDone', { num: P.num })) + '</h1>' +
+        '<p class="serif" style="font-size:17px;font-weight:600">' + esc(P.title) + '</p>' +
+        '<p class="lede">' + esc(P.summary || P.desc) + '</p>' + (pline ? '<p class="small muted">' + esc(pline) + '</p>' : '') +
+        (partTerms(P).length ? '<a class="btn ghost-line" href="#/review/' + L.course + '/' + P.id + '" style="margin-top:8px">' + esc(t('partReview')) + '</a>' : '');
+    } else if (moduleComplete(m)) {
       var mods = D.courses[L.course].modules, i = mods.indexOf(m), nm = mods[i + 1];
       var nline = !nm ? '' : nm.status === 'open' ? t('nextModuleOpen', { t: nm.title }) : nm.launch ? t('nextModuleOn', { t: nm.title, d: month(nm.launch) }) : t('nextModuleTBD', { t: nm.title });
       html += '<div class="stamp" aria-hidden="true">' + esc(c.seal || '道') + '</div><h1 class="serif" style="font-size:24px">' + esc(t('moduleDone', { num: m.num })) + '</h1>' +
@@ -551,18 +594,24 @@
   }
 
   // ---------- review ----------
-  function screenReview() {
-    var queue = dueCards();
+  function screenReview(cid, pid) {
+    var P = pid ? partById(cid, pid) : null;
+    var queue = P ? partTerms(P) : dueCards();
     var st = { i: 0, back: false, total: queue.length };
     function draw() {
       if (st.i >= queue.length) {
+        if (P) {
+          setView('<div class="stack gap-16"><h1 class="page-title">' + esc(t('review')) + '</h1><div class="empty stack gap-8"><h2 class="serif" style="font-size:20px">' + esc(t('partReviewDone')) + '</h2><p class="lede">' + esc(t('partN', { num: P.num }) + '　' + P.title) + '</p>' +
+            '<a class="btn" href="#/course/' + cid + '" style="margin-top:12px">' + esc(t('backToCourse')) + '</a></div></div>', 'review');
+          return;
+        }
         setView('<div class="stack gap-16"><h1 class="page-title">' + esc(t('review')) + '</h1><div class="empty stack gap-8"><h2 class="serif" style="font-size:20px">' + esc(t('reviewEmpty')) + '</h2><p class="lede">' + esc(t('reviewEmptySub')) + '</p></div></div>', 'review');
         return;
       }
       var g = D.gById[queue[st.i]], c = S.cards[g.id];
       var ivAgain = 1, ivHard = Math.max(3, Math.round((c.ivl || 1) * 1.2)), ivGood = Math.max(7, Math.round((c.ivl || 2) * 2.5));
       function lab(n) { return n === 1 ? t('tomorrow') : t('inDays', { n: n }); }
-      var html = '<div class="stack gap-16"><div class="row between"><h1 class="page-title">' + esc(t('review')) + '</h1><span class="muted" style="font-size:14px">' + (st.i + 1) + ' / ' + st.total + '</span></div>' +
+      var html = '<div class="stack gap-16"><div class="row between"><h1 class="page-title">' + esc(P ? t('partN', { num: P.num }) + '　' + P.title : t('review')) + '</h1><span class="muted" style="font-size:14px">' + (st.i + 1) + ' / ' + st.total + '</span></div>' +
         '<button class="flash" id="flip" aria-label="' + esc(t('tapToFlip')) + '"><span class="label">' + esc(st.back ? t('explanation') : t('term')) + '</span>' +
         '<span class="term">' + esc(g.term) + '</span><span class="latin">' + esc(g.latin) + '</span>' +
         (st.back ? '<span class="rule" aria-hidden="true"></span><span class="def">' + esc(g.def) + '</span><span class="small muted">' + esc(g.ref) + '</span>' :
@@ -579,7 +628,8 @@
         b.onclick = function () {
           var iv = +b.dataset.iv; S.cards[g.id] = { due: addDays(iv), ivl: iv };
           if (S.rev.d !== today()) S.rev = { d: today(), n: 0 };
-          S.rev.n++; markDay(); save(); st.i++; st.back = false; draw();
+          if (!P) S.rev.n++;
+          markDay(); save(); st.i++; st.back = false; draw();
         };
       });
     }
@@ -632,7 +682,6 @@
       '<span id="fsv" class="muted" style="min-width:36px;text-align:center">' + S.fs + '</span><button class="a-btn" id="larger" aria-label="' + esc(t('larger')) + '" style="font-size:22px">A</button></div></div>' +
       '<div class="setrow" style="padding:12px 0"><p class="serif" style="font-size:var(--fs);line-height:1.8">' + esc(t('closingQuote')) + '</p></div></div></section>' +
       '<section class="stack gap-8"><span class="small muted">' + esc(t('study')) + '</span><div class="group">' +
-      '<div class="setrow"><span style="font-size:16px">' + esc(t('dailyCap')) + '</span>' + segHtml('cap', [[1, '1'], [2, '2'], [3, '3']], S.cap) + '</div>' +
       '<div class="setrow"><span style="font-size:16px">' + esc(t('reviewCap')) + '</span>' + segHtml('rcap', [[10, '10'], [20, '20'], [30, '30']], S.revCap) + '</div></div></section>' +
       '<section class="stack gap-8"><span class="small muted">' + esc(t('remind')) + '</span><div class="group">' +
       '<label class="setrow"><span style="font-size:16px">' + esc(t('remindTime')) + '</span><input id="rt" type="time" value="' + esc(S.remind) + '" class="time"></label>' +
@@ -644,7 +693,6 @@
       '<span class="small muted">' + esc(t('aboutNote')) + '</span></div></section></div>';
     setView(html, null);
     view.querySelectorAll('[data-script]').forEach(function (b) { b.onclick = function () { switchScript(b.dataset.script); }; });
-    view.querySelectorAll('[data-cap]').forEach(function (b) { b.onclick = function () { S.cap = +b.dataset.cap; save(); screenSettings(); }; });
     view.querySelectorAll('[data-rcap]').forEach(function (b) { b.onclick = function () { S.revCap = +b.dataset.rcap; save(); screenSettings(); }; });
     document.getElementById('rt').onchange = function (e) { S.remind = e.target.value || S.remind; save(); };
     document.getElementById('ics').onclick = downloadICS;
@@ -675,7 +723,7 @@
       case 'course': return h[1] ? screenCourse(h[1]) : screenCatalogue();
       case 'lesson': return screenLesson(h[1]);
       case 'quiz': return screenQuiz(h[1]);
-      case 'review': return screenReview();
+      case 'review': return screenReview(h[1], h[2]);
       case 'glossary': return screenGlossary(h[1]);
       case 'settings': return screenSettings();
       default: return screenToday();
