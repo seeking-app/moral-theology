@@ -137,7 +137,7 @@
   function partById(cid, pid) { var c = D.courses[cid]; return c ? c.parts.filter(function (p) { return p.id === pid; })[0] : null; }
   function partTerms(p) {
     var seen = {}, out = [];
-    partLessons(p).forEach(function (l) { (l.terms || []).forEach(function (g) { if (!seen[g] && D.gById[g] && S.cards[g]) { seen[g] = 1; out.push(g); } }); });
+    partLessons(p).forEach(function (l) { (l.termIds || []).forEach(function (g) { if (!seen[g] && D.gById[g] && S.cards[g]) { seen[g] = 1; out.push(g); } }); });
     return out;
   }
   function partHeader(cid, p) {
