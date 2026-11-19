@@ -1,27 +1,22 @@
-/* 尋道 service worker: precache everything listed in precache.json; serve offline. */
-const PRECACHE = 'precache.json';
-
-async function manifest() {
-  const res = await fetch(PRECACHE, { cache: 'no-store' });
-  return res.json();
-}
+/* 尋道 service worker: precache everything listed in precache.json; serve offline.
+   tools/build.py rewrites VERSION on every build, so each new build changes this file's bytes
+   and the browser installs the new worker (and with it the new content). */
+const VERSION = '7f8f022441f5';
+const CACHE = 'xundao-' + VERSION;
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
-    const m = await manifest();
-    const cache = await caches.open('xundao-' + m.version);
-    await cache.addAll(m.files);
+    const m = await (await fetch('precache.json', { cache: 'no-store' })).json();
+    const cache = await caches.open(CACHE);
+    // bypass the HTTP cache so the new build's files are fetched fresh
+    await cache.addAll(m.files.map((u) => new Request(u, { cache: 'reload' })));
     await self.skipWaiting();
   })());
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
-    let keep = null;
-    try { keep = 'xundao-' + (await manifest()).version; } catch (e) { /* offline: keep all */ }
-    if (keep) {
-      for (const k of await caches.keys()) if (k.startsWith('xundao-') && k !== keep) await caches.delete(k);
-    }
+    for (const k of await caches.keys()) if (k.startsWith('xundao-') && k !== CACHE) await caches.delete(k);
     await self.clients.claim();
   })());
 });
@@ -30,12 +25,13 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
   event.respondWith((async () => {
-    const hit = await caches.match(req, { ignoreSearch: true });
+    const cache = await caches.open(CACHE);
+    const hit = await cache.match(req, { ignoreSearch: true });
     if (hit) return hit;
     try {
       return await fetch(req);
     } catch (e) {
-      if (req.mode === 'navigate') return (await caches.match('index.html')) || Response.error();
+      if (req.mode === 'navigate') return (await cache.match('index.html')) || (await cache.match('./')) || Response.error();
       return Response.error();
     }
   })());

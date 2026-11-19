@@ -738,7 +738,17 @@
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     window.addEventListener('load', function () {
-      try { navigator.serviceWorker.register('sw.js').catch(function () {}); } catch (e) { /* unsupported context */ }
+      try {
+        var hadController = !!navigator.serviceWorker.controller, reloaded = false;
+        // when a new build's worker takes over, reload once so the new files are used
+        navigator.serviceWorker.addEventListener('controllerchange', function () {
+          if (hadController && !reloaded) { reloaded = true; location.reload(); }
+        });
+        navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(function (reg) {
+          reg.update().catch(function () {});
+          document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') reg.update().catch(function () {}); });
+        }).catch(function () {});
+      } catch (e) { /* unsupported context */ }
     });
   }
 })();
