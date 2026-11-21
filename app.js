@@ -1,4 +1,4 @@
-/* 尋道 — a series of bite-size theology courses. Plain JS, no build step. */
+/* QUAERENS 尋道 — a series of bite-size theology courses. Plain JS, no build step. */
 (function () {
   'use strict';
 
@@ -229,7 +229,7 @@
   // ---------- onboarding ----------
   function screenStart() {
     var anchors = [['07:00', t('anchorMorning')], ['12:30', t('anchorNoon')], ['21:00', t('anchorEvening')]];
-    var html = '<div class="stack gap-20" style="padding-top:24px"><div class="brand"><div class="seal" aria-hidden="true">道</div><span class="brand-name">' + esc(t('appName')) + '</span></div>' +
+    var html = '<div class="stack gap-20 onboard"><div class="brand"><div class="seal lg" aria-hidden="true">道</div><span class="brand-name"><span class="wm-lat">QUAERENS</span><span class="wm-zh">' + esc(t('appName')) + '</span></span></div>' +
       '<h1 class="serif" style="font-size:26px;font-weight:700">' + esc(t('obTitle')) + '</h1><p class="lede">' + esc(t('obText')) + '</p>' +
       '<section class="stack gap-8"><span class="label">' + esc(t('obWhen')) + '</span>' + segHtml('anchor', anchors, S.remind) +
       '<label class="setrow" style="border:0;min-height:44px"><span>' + esc(t('remindTime')) + '</span><input id="rt" type="time" value="' + esc(S.remind) + '" class="time"></label></section>' +
@@ -282,7 +282,7 @@
     var d = new Date();
     var due = dueCards().length, dm = daysThisMonth();
     var html = '<div class="stack gap-20">' +
-      '<header class="top"><div class="brand"><div class="seal" aria-hidden="true">道</div><span class="brand-name">' + esc(t('appName')) + '</span></div>' +
+      '<header class="top"><div class="brand"><div class="seal" aria-hidden="true">道</div><span class="brand-name"><span class="wm-lat">QUAERENS</span><span class="wm-zh">' + esc(t('appName')) + '</span></span></div>' +
       '<a class="icon-btn" href="#/settings" aria-label="' + esc(t('settings')) + '">' + ICON.gear + '</a></header>' +
       '<div class="stack gap-4"><span class="small muted">' + esc(t('dateFmt', { m: d.getMonth() + 1, d: d.getDate(), w: D.ui.weekdays[d.getDay()] })) +
       (dm ? '　·　' + esc(t('daysThisMonth', { n: dm })) : '') + '</span></div>';
@@ -292,7 +292,7 @@
       html += '<section class="card stack gap-12"><h2 class="serif" style="font-size:20px">' + esc(t('noActive')) + '</h2><p class="lede">' + esc(t('noActiveSub')) + '</p>' +
         '<a class="btn" href="#/course">' + esc(t('browse')) + '</a></section>';
     }
-    active.forEach(function (c) { html += todayCard(c); });
+    active.forEach(function (c, i) { html += todayCard(c, i === 0); });
     html += courseStrip();
     html += '<a class="card card-link" href="#/review"><div class="stack gap-4"><span style="font-size:15px;font-weight:500">' + esc(t('reviewCards')) + '</span>' +
       '<span class="small muted">' + esc(due ? t('cardsDue', { n: due }) : t('noCardsDue')) + '</span></div><span class="muted">' + ICON.chev + '</span></a></div>';
@@ -307,7 +307,7 @@
       '<div class="dots" style="grid-template-columns:repeat(' + n + ',minmax(0,1fr))" role="img" aria-label="' + doneN + ' / ' + n + '">' +
       m.lessons.map(function (l) { return '<span class="' + (S.done[l.id] ? 'on' : (l.id === curId ? 'cur' : '')) + '"></span>'; }).join('') + '</div></div>';
   }
-  function todayCard(c) {
+  function todayCard(c, hero) {
     var L = nextLesson(c.id);
     var head = '<a class="course-head" href="#/course/' + c.id + '">' + seal(c, 'sm') + '<span class="course-name">' + esc(c.title) + '</span><span class="muted">' + ICON.chev + '</span></a>';
     if (!L) {
@@ -329,7 +329,7 @@
     }
     var body = '<p class="lede" data-key="' + L.id + '"></p>' +
       '<div class="row gap-12 small muted"><span>' + esc(t('minutes', { m: L.minutes })) + '</span><span aria-hidden="true">·</span><span>' + esc(t('quizN', { n: 3 })) + '</span></div>';
-    return '<section class="card stack gap-12" aria-label="' + esc(c.title) + '">' + head + info + body +
+    return '<section class="card today-card stack gap-12' + (hero ? ' hero' : '') + '" aria-label="' + esc(c.title) + '">' + head + info + body +
       '<a class="btn" href="#/lesson/' + L.id + '">' + esc(t('startReading')) + '</a>' + moduleDots(m, L.id) + '</section>';
   }
   function courseStrip() {

@@ -1,13 +1,13 @@
 {
-  "name": "尋道",
+  "name": "QUAERENS 尋道",
   "short_name": "尋道",
   "description": "循序漸進的天主教神學課程",
   "lang": "zh-Hant",
   "start_url": "./#/today",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#F3F2EE",
-  "theme_color": "#F3F2EE",
+  "background_color": "#F5F1E8",
+  "theme_color": "#F5F1E8",
   "icons": [
     {
       "src": "icons/icon-192.png",

@@ -1,5 +1,5 @@
 {
-"version": "138439577186",
+"version": "8943a2dff0ed",
 "files": [
 "./",
 "app.css",
@@ -607,6 +607,9 @@
 "data/hant/glossary.json",
 "data/hant/ui.json",
 "data/index.json",
+"fonts/OFL.txt",
+"fonts/cormorant-500i.woff2",
+"fonts/cormorant-600.woff2",
 "icons/apple-touch-icon.png",
 "icons/icon-192.png",
 "icons/icon-512.png",
